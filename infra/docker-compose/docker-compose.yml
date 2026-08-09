@@ -1,0 +1,127 @@
+name: content-studio
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: content_studio
+  POSTGRES_PASSWORD: content_studio_dev
+  POSTGRES_DB: content_studio
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      <<: *postgres-env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U content_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  temporal:
+    image: temporalio/auto-setup:1.28
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: content_studio
+      POSTGRES_PWD: content_studio_dev
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports:
+      - "7233:7233"
+    healthcheck:
+      # The server binds to its own container IP, not loopback — a
+      # `localhost:7233` check from inside this same container fails even
+      # once it's up, so this must address it by its Compose service name.
+      # Cold boot (auto-setup's schema migration + server start) takes
+      # ~15-20s; any client connecting before this passes gets a plain
+      # connection-refused, not a graceful retry (see worker's depends_on).
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: "http://localhost:3000"
+    ports:
+      - "8080:8080"
+
+  opa:
+    image: openpolicyagent/opa:latest-envoy
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      - ../opa-policies:/policies:ro
+    ports:
+      - "8181:8181"
+
+  openbao:
+    image: openbao/openbao:latest
+    cap_add:
+      - IPC_LOCK
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: ["server", "-s3", "-s3.port=8333", "-dir=/data", "-master.volumeSizeLimitMB=1024"]
+    volumes:
+      - seaweedfs_data:/data
+    ports:
+      - "9333:9333"
+      - "8333:8333"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: dev
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  seaweedfs_data:
+  grafana_data:

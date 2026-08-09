@@ -1,0 +1,80 @@
+name: content-studio
+
+# Full stack: the existing infra-only compose plus the app itself,
+# containerized. `docker-compose.yml` stays infra-only on purpose — local
+# dev runs backend/frontend as bare `uvicorn`/`npm run dev` processes for
+# fast iteration (hot reload, no rebuild-per-change). This file is for
+# testing the real deploy artifact locally before it moves to Coolify on
+# the VPS, and for Coolify itself to consume directly later.
+#
+# Usage: docker compose -f docker-compose.prod.yml up --build
+# First run (and after any migration): docker compose -f docker-compose.prod.yml run --rm backend alembic upgrade head
+
+include:
+  - docker-compose.yml
+
+x-backend-env: &backend-env
+  CS_DATABASE_URL: postgresql+asyncpg://content_studio:content_studio_dev@postgres:5432/content_studio
+  CS_REDIS_URL: redis://redis:6379/0
+  CS_OBJECT_STORAGE_ENDPOINT: http://seaweedfs:8333
+  CS_OBJECT_STORAGE_BUCKET: content-studio-assets
+  CS_OBJECT_STORAGE_ACCESS_KEY: dev
+  CS_OBJECT_STORAGE_SECRET_KEY: dev-secret
+  CS_TEMPORAL_TARGET: temporal:7233
+  CS_TEMPORAL_NAMESPACE: default
+  CS_TEMPORAL_TASK_QUEUE: content-studio
+  CS_OPA_URL: http://opa:8181
+  CS_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+  CS_ENVIRONMENT: ${CS_ENVIRONMENT:-production}
+  # Dev-safe fallbacks so this runs out of the box like everything else in
+  # the stack — override both via a real .env before this ever points at
+  # the VPS (see backend/.env.example).
+  CS_JWT_SECRET: ${CS_JWT_SECRET:-dev-only-change-me}
+  CS_OPENBAO_URL: http://openbao:8200
+  CS_OPENBAO_TOKEN: ${CS_OPENBAO_TOKEN:-dev-root-token}
+  CS_AI_TEXT_API_KEY: ${CS_AI_TEXT_API_KEY:-}
+  CS_REPLICATE_API_TOKEN: ${CS_REPLICATE_API_TOKEN:-}
+
+services:
+  backend:
+    build:
+      context: ../../backend
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    # On a genuinely fresh DB, this crashes on first boot (tables from
+    # `alembic upgrade head` don't exist yet — see the "first run" command
+    # in this file's header comment) and there's a real chicken-and-egg gap
+    # in plain `docker compose up`: nothing runs migrations before this
+    # service starts. `on-failure` means it comes back clean on its own
+    # once the migration command completes, instead of staying Exited.
+    restart: on-failure
+
+  worker:
+    build:
+      context: ../../backend
+    command: ["python", "-m", "content_studio.workflows.worker"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: on-failure
+
+  frontend:
+    build:
+      context: ../../apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+uv.lock.bak
+
+# Node
+node_modules/
+.next/
+out/
+
+# Env / secrets
+.env
+.env.local
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes / local data
+infra/docker-compose/**/data/
+
+# Editors
+.vscode/
+.idea/

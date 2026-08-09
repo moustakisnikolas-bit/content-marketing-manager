@@ -1,0 +1,42 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/frontend-ci.yml"
+
+defaults:
+  run:
+    working-directory: apps/web
+
+jobs:
+  typecheck-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Lint
+        run: npm run lint
+
+      # No component/e2e test runner is wired up yet (Vitest/Playwright were
+      # named in the original stack plan but never actually set up) — this
+      # workflow reflects what's real today, not what the plan aspired to.
+      # Add a `test` job here once one exists.

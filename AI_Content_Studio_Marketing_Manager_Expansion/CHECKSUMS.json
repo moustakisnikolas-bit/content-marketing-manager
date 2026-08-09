@@ -1,0 +1,192 @@
+[
+  {
+    "path": "01_PROJECT_OVERVIEW.md",
+    "sha256": "62dad72ed56baa319407827d3df7933b8075659bcff3e5d4c6b65cb0ee6a21ac",
+    "bytes": 1397
+  },
+  {
+    "path": "02_PRODUCT_VISION.md",
+    "sha256": "577160aa54b68f7d6f642a5b0537db2f85623563df0d8c4fae10f1bb2dd612c7",
+    "bytes": 1103
+  },
+  {
+    "path": "03_TARGET_USERS.md",
+    "sha256": "67c4d7f090453a8d13a084419183ce722ad4edc122ad1dba62bd82ad912de1aa",
+    "bytes": 948
+  },
+  {
+    "path": "04_CORE_FEATURES.md",
+    "sha256": "93a3072923abd1627e8d71b4d7018595592ebcab57aff4b6a7cb793acc1be85e",
+    "bytes": 1099
+  },
+  {
+    "path": "05_AI_CONTENT_CREATION_MODULE.md",
+    "sha256": "fe028cc08c5081ad63fb39c30ccef21a0cac9aee19ef421e75c61947efcd8ebc",
+    "bytes": 1047
+  },
+  {
+    "path": "06_AUDIO_STUDIO_MODULE.md",
+    "sha256": "bc2dbf270fa1c324df2d4d8cc08f767c74f907e1d8faeccabb4520a57ffe51ff",
+    "bytes": 1037
+  },
+  {
+    "path": "07_AI_MARKETING_MANAGER_MODULE.md",
+    "sha256": "8b316dd91df3b5fa69bc4a38f61bf54f7b43529d4d7d210928e7a9fbbcc6396f",
+    "bytes": 2275
+  },
+  {
+    "path": "08_AUTOPILOT_MARKETING_MODE.md",
+    "sha256": "50b82b960c9b314176d8724a30e3f0c0cb96f8e81cd4ac28ee3b1f902fd6918f",
+    "bytes": 1306
+  },
+  {
+    "path": "09_RECOMMENDATION_ENGINE.md",
+    "sha256": "a4022dd212372903638c76e4b84d1823390fbe7d660b6aaac1490b7b40720e83",
+    "bytes": 1374
+  },
+  {
+    "path": "10_SOCIAL_PUBLISHING_MODULE.md",
+    "sha256": "540b561d5bb8c44383b49f51ccd5b5f96b18c3da115665c30347f651f8067ef8",
+    "bytes": 909
+  },
+  {
+    "path": "11_ANALYTICS_AND_OPTIMIZATION.md",
+    "sha256": "630f985f23f7c697fbfc538817244198657691a835477dd23d603fc890d84469",
+    "bytes": 912
+  },
+  {
+    "path": "12_ECOMMERCE_MANAGER_MODULE.md",
+    "sha256": "cf2703789a2fb65efa4f525103c0a99a382dc6abbf4f563d81fabd0c1b2525ef",
+    "bytes": 1169
+  },
+  {
+    "path": "13_WOOCOMMERCE_PLUGIN_ARCHITECTURE.md",
+    "sha256": "4e0ea2b0cb715fbfd5827cc3151097493370a13d3d43d3c0b2b4b1463d1936c9",
+    "bytes": 1706
+  },
+  {
+    "path": "14_SHOPIFY_APP_ARCHITECTURE.md",
+    "sha256": "4d6719695e19e070a6434fd496671a03432d2577258f11aa50dd3881e64ba410",
+    "bytes": 1301
+  },
+  {
+    "path": "15_MCP_AGENTS_AND_SECURITY.md",
+    "sha256": "9ff6834fd026416b7dfe7808d6bb98eda0d2c0fedf031e65383a68712a34c979",
+    "bytes": 987
+  },
+  {
+    "path": "16_AUDIT_TRAIL_AND_APPROVALS.md",
+    "sha256": "977798d59abd2ce32b573e0c4ff91c680e43adc3c92871d72e6c87b28eaffdfe",
+    "bytes": 1169
+  },
+  {
+    "path": "17_BACKEND_ARCHITECTURE.md",
+    "sha256": "143dfb2511eb36e49cb71d8b6e0602224812f4dc6d0e185fcb00356d427f1c48",
+    "bytes": 1059
+  },
+  {
+    "path": "18_DATABASE_SCHEMA_POSTGRESQL.md",
+    "sha256": "25f92b557679fc33beb5624cec3020f183fbc4ef4c41ba278ac02eca7ff303d0",
+    "bytes": 1486
+  },
+  {
+    "path": "19_ADMIN_PANEL_SPECIFICATION.md",
+    "sha256": "c571bbbac8b7bdb5ed923026c99031c65c017d7f184b94c99d8c394adbbb94ec",
+    "bytes": 816
+  },
+  {
+    "path": "20_USER_PANEL_SPECIFICATION.md",
+    "sha256": "0f353ebfc00bf82fe0c16f73be392a069881e1a3ce1ea5ac91ef139821899ad4",
+    "bytes": 891
+  },
+  {
+    "path": "21_PROVIDER_STRATEGY_AND_COSTS.md",
+    "sha256": "2dae9077d1dd0956de5398cc5c9e1dcfa7b9ebd9b0f74a3a697a2f19138dfcda",
+    "bytes": 961
+  },
+  {
+    "path": "22_BILLING_AND_PRICING_MODEL.md",
+    "sha256": "756d51d662273ebec4915098938103ed8b19b8b0567d746a43b457241700734f",
+    "bytes": 1025
+  },
+  {
+    "path": "23_ROADMAP_PHASES_AND_MILESTONES.md",
+    "sha256": "dfbd716288668aa79d8edc986249c5a48b4e280d817b2a8fe085ff24ee8df5a9",
+    "bytes": 1440
+  },
+  {
+    "path": "24_FUTURE_PRODUCT_IDEAS_ARCHIVE.md",
+    "sha256": "7b1946f5fe02122075e4fd838d86227babb716627d0cd0fac8f8a5adf5f9049f",
+    "bytes": 1489
+  },
+  {
+    "path": "25_ULTRA_SUPER_MASTER_PROMPT.md",
+    "sha256": "2f595f3e32e304772f0f36f048fb23eb34dc41509dd2f80d4adf44773bf1c555",
+    "bytes": 5596
+  },
+  {
+    "path": "26_IMPLEMENTATION_CHECKLIST.md",
+    "sha256": "5eca0570e1bfe5f275d8fa178d72baf92ba55c403b7932785788af1ad9c31e2b",
+    "bytes": 1442
+  },
+  {
+    "path": "27_SOURCE_REFERENCES.md",
+    "sha256": "1907c3462379f5061a3fc100326758f7e8a804d01a49dd1d22b5e34a6ef2e578",
+    "bytes": 1020
+  },
+  {
+    "path": "FILE_INDEX.md",
+    "sha256": "dc44ce23b5aa225feb4181a3fce43e7d26ca49226322231936fe6c6b2fde8eec",
+    "bytes": 1323
+  },
+  {
+    "path": "MANIFEST.json",
+    "sha256": "c1b054d85b2f363223519d1abe6c14216cd070c7ead1fc453ab640acbdeb1086",
+    "bytes": 346
+  },
+  {
+    "path": "README.md",
+    "sha256": "21b5ac0eeb21b4f41ebb16d2e997d2e8c7240151711e27afe9aa6424eecfafc4",
+    "bytes": 1246
+  },
+  {
+    "path": "milestones/PHASE_01_FOUNDATION.md",
+    "sha256": "87b5dbef63ce787fcd0180b8fbd07399852f7b4840e45d8a17059e6c65aca5c2",
+    "bytes": 762
+  },
+  {
+    "path": "milestones/PHASE_02_CORE_AI_CONTENT_CREATION.md",
+    "sha256": "4a189b4946dc468516c98cf9b1eaf2152fffe5ea585fc01c410feba56b368eb7",
+    "bytes": 749
+  },
+  {
+    "path": "milestones/PHASE_03_PUBLISHING_SYSTEM.md",
+    "sha256": "0791bd483d434ec01aa9ea9adc7e28e33e294871c5ca83931081ec0bcd1821a0",
+    "bytes": 734
+  },
+  {
+    "path": "milestones/PHASE_04_AI_MARKETING_MANAGER.md",
+    "sha256": "f346c94ed2ed8df4b84b7c0cee74973587238abcdd93de1cd1f8944fc5a5d265",
+    "bytes": 776
+  },
+  {
+    "path": "milestones/PHASE_05_ANALYTICS_OPTIMIZATION.md",
+    "sha256": "3dd963366f2690849c7350c32b897861542a1460c6750b0885716d8a8bcae6bf",
+    "bytes": 771
+  },
+  {
+    "path": "milestones/PHASE_06_ECOMMERCE_MANAGER.md",
+    "sha256": "ab2b98e19a3456227a670773e94a4b37fe44e023fbb400adaa8a5a4ce1e22ec2",
+    "bytes": 768
+  },
+  {
+    "path": "milestones/PHASE_07_ADVANCED_AGENTS_MCP.md",
+    "sha256": "647c41b4a81e91ed2dc86b29d3ed5b7598bd58b9deb01a2a26ff1f27c8dfbcdd",
+    "bytes": 778
+  },
+  {
+    "path": "milestones/PHASE_08_SCALING_AGENCY_WHITE_LABEL.md",
+    "sha256": "8e3ec24bca3159b5388b1f73baa688176914e97c146fbee58fcea15ed399d8ee",
+    "bytes": 747
+  }
+]

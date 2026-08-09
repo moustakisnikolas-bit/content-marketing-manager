@@ -1,0 +1,62 @@
+[project]
+name = "content-studio-backend"
+version = "0.1.0"
+description = "AI Content Studio backend — FastAPI modular monolith"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic[email]>=2.9",
+    "pydantic-settings>=2.6",
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.10",
+    "authlib>=1.3",
+    "httpx>=0.27",
+    "boto3>=1.35",
+    "python-multipart>=0.0.12",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-exporter-otlp>=1.27",
+    "temporalio>=1.8",
+    "mcp>=1.0",
+    "redis>=5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "testcontainers[postgres]>=4.8",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# B008 ("function call in default argument") is bugbear's generic
+# mutable-default-arg trap detector — it doesn't know FastAPI's
+# `Depends(...)`/`Query(...)`/`Header(...)` pattern is the framework's own
+# intentional, idiomatic dependency-injection mechanism, not a bug. This is
+# the standard ignore every FastAPI+ruff project adds; it's not a general
+# lint bar being lowered, just a false-positive for this one framework
+# pattern used correctly (and extensively) throughout this codebase.
+ignore = ["B008"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/content_studio"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
