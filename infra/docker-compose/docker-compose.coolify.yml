@@ -17,8 +17,8 @@ name: content-studio
 # Docker network needs to reach them directly on a real server, and this
 # avoids port conflicts with any other project sharing this VPS later.
 #
-# All relative paths (build contexts, bind mounts) are relative to the
-# REPO ROOT, not to this file's own directory — Coolify runs
+# All relative paths (build contexts) are relative to the REPO ROOT, not
+# to this file's own directory — Coolify runs
 # `docker compose --project-directory <repo-root> -f <this file>`, and
 # Compose resolves relative paths against --project-directory when it's
 # explicitly passed, not against the compose file's location (confirmed
@@ -26,6 +26,17 @@ name: content-studio
 # above repo root, not `<repo-root>/backend`). This differs from local
 # dev, where plain `docker compose` run from infra/docker-compose/
 # resolves relative paths against that directory instead.
+#
+# Small static config files (postgres init script, OPA policies, otel/
+# prometheus/grafana config) are baked into tiny built images via
+# dockerfile_inline instead of host bind-mounted — confirmed live that
+# Coolify's runtime deploy directory (/data/coolify/applications/<uuid>/,
+# separate from the ephemeral /artifacts/<deployment-uuid>/ used for
+# builds) does not reliably contain the git-checked-out files a bind
+# mount needs; Docker's fallback behavior (auto-create the missing host
+# path as an empty directory) then breaks the mount since the container
+# expects a file. Build contexts, by contrast, use the correctly-cloned
+# /artifacts directory and have proven to work.
 
 x-postgres-env: &postgres-env
   POSTGRES_USER: content_studio
@@ -56,12 +67,16 @@ x-backend-env: &backend-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM postgres:16-alpine
+        COPY infra/docker-compose/postgres/init-multi-db.sh /docker-entrypoint-initdb.d/init-multi-db.sh
+        RUN chmod +x /docker-entrypoint-initdb.d/init-multi-db.sh
     environment:
       <<: *postgres-env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/docker-compose/postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U content_studio"]
       interval: 5s
@@ -93,10 +108,12 @@ services:
       start_period: 15s
 
   opa:
-    image: openpolicyagent/opa:latest-envoy
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM openpolicyagent/opa:latest-envoy
+        COPY infra/opa-policies /policies
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
-    volumes:
-      - ./infra/opa-policies:/policies:ro
 
   openbao:
     image: openbao/openbao:latest
@@ -113,23 +130,30 @@ services:
       - seaweedfs_data:/data
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM otel/opentelemetry-collector-contrib:latest
+        COPY infra/docker-compose/otel/otel-collector-config.yaml /etc/otel-collector-config.yaml
     command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./infra/docker-compose/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
 
   prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./infra/docker-compose/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM prom/prometheus:latest
+        COPY infra/docker-compose/prometheus/prometheus.yml /etc/prometheus/prometheus.yml
 
   grafana:
-    image: grafana/grafana:latest
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM grafana/grafana:latest
+        COPY infra/docker-compose/grafana/provisioning /etc/grafana/provisioning
     environment:
       GF_SECURITY_ADMIN_PASSWORD: dev
       GF_AUTH_ANONYMOUS_ENABLED: "true"
     volumes:
-      - ./infra/docker-compose/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
