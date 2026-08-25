@@ -19,10 +19,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 define( 'CS_CONNECT_VERSION', '0.1.0' );
 
-// MUST CHANGE once the backend is deployed to the real domain — must match
-// the backend's own CS_PUBLIC_API_BASE_URL (see backend/.env.example).
+// Must match the backend's own CS_PUBLIC_API_BASE_URL (see
+// backend/.env.example). Currently the personal-use VPS deployment — swap
+// to the real commercial domain once one is bought (see deployment notes).
 if ( ! defined( 'CS_CONNECT_API_BASE_URL' ) ) {
-	define( 'CS_CONNECT_API_BASE_URL', 'https://your-content-studio-domain.example.com/api/v1' );
+	define( 'CS_CONNECT_API_BASE_URL', 'https://api-ng0w75q8muzknqpgaz3dvj6s.169.58.234.8.sslip.io/api/v1' );
 }
 
 // Where the "finish setup: connect Facebook & Instagram" link sends the
@@ -30,7 +31,7 @@ if ( ! defined( 'CS_CONNECT_API_BASE_URL' ) ) {
 // Meta's OAuth dialog explicitly blocks iframe embedding, and this plugin
 // makes no attempt to replicate that flow in PHP (see plan notes).
 if ( ! defined( 'CS_CONNECT_WEB_APP_URL' ) ) {
-	define( 'CS_CONNECT_WEB_APP_URL', 'https://your-content-studio-domain.example.com/quick-start' );
+	define( 'CS_CONNECT_WEB_APP_URL', 'https://vmi3532555.contaboserver.net/quick-start' );
 }
 
 add_action( 'admin_menu', 'cs_connect_register_menu' );

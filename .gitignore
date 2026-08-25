@@ -28,3 +28,4 @@ infra/docker-compose/**/data/
 # Editors
 .vscode/
 .idea/
+apps/woocommerce-plugin/dist/
