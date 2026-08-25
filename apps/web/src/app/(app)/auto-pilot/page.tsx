@@ -45,7 +45,7 @@ function AutoPilotRow({ campaign }: { campaign: CampaignOut }) {
         </p>
       </div>
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" render={<Link href={`/campaigns?campaign=${campaign.id}`} />}>
+        <Button size="sm" variant="outline" render={<Link href={`/campaigns?campaign=${campaign.id}`} />} nativeButton={false}>
           Manage
         </Button>
         <Button size="sm" variant="outline" disabled={busy || policy.kill_switch_active} onClick={handleHalt}>

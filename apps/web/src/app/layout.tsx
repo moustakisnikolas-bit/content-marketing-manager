@@ -1,12 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Ubuntu } from "next/font/google";
 import { QueryProvider } from "@/lib/query-provider";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Helvetica isn't on Google Fonts (Linotype/Monotype licensing — it can't
+// be freely embedded for the web), so Ubuntu is the closest freely-licensed
+// choice that renders consistently for every visitor rather than depending
+// on what's installed locally.
+const ubuntuSans = Ubuntu({
+  variable: "--font-ubuntu-sans",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "700"],
 });
 
 const geistMono = Geist_Mono({
@@ -27,7 +32,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${ubuntuSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <QueryProvider>{children}</QueryProvider>

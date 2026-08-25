@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     # which points at a frontend route, not this API directly.
     public_api_base_url: str = "http://localhost:8000/api/v1"
 
+    # Comma-separated — the frontend (:3000) and backend (:8000) are
+    # different origins even in local dev, so every browser request needs
+    # CORS to allow it; a bare curl request doesn't go through preflight at
+    # all, which is why this was never caught by any of this project's
+    # curl-based verification. MUST CHANGE for any non-local deployment to
+    # the real frontend domain.
+    cors_allowed_origins: str = "http://localhost:3000"
+
     jwt_secret: str = "dev-only-change-me"
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 15
@@ -53,6 +61,11 @@ class Settings(BaseSettings):
     ai_text_base_url: str = "https://openrouter.ai/api/v1"
     ai_text_api_key: str = ""
     ai_text_default_model: str = "openai/gpt-4o-mini"
+    # Plain language name (not an ISO code) — used directly in a system
+    # prompt instructing the model, so it must read naturally in a sentence
+    # like "Always respond in {value}." Empty string means "no instruction,
+    # follow the brief's own language" (the old behavior).
+    ai_text_output_language: str = "Greek"
 
     replicate_api_token: str = ""
     ai_image_default_model: str = "black-forest-labs/flux-schnell"

@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { ProposalSummary } from "@/components/proposal-summary";
 import { api, type CampaignProposalOut } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 
@@ -42,34 +43,8 @@ function ProposalReview({ proposal }: { proposal: CampaignProposalOut }) {
 
   return (
     <Card className="border-primary/30">
-      <CardHeader>
-        <CardTitle className="text-base">{proposal.objective}</CardTitle>
-        <CardDescription>{proposal.plan_summary}</CardDescription>
-      </CardHeader>
+      <ProposalSummary proposal={proposal} />
       <CardContent className="space-y-4">
-        <div>
-          <p className="text-sm font-medium">Planned posts</p>
-          <ul className="mt-2 space-y-2">
-            {proposal.plan_items_draft.map((item, i) => (
-              <li key={i} className="rounded-md border border-border p-3 text-sm">
-                <p className="font-medium">{item.title}</p>
-                <p className="text-muted-foreground">{item.brief_text}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <p className="text-sm font-medium">Assumptions</p>
-          <ul className="mt-1 list-inside list-disc text-sm text-muted-foreground">
-            {proposal.assumptions.map((a, i) => (
-              <li key={i}>{a}</li>
-            ))}
-          </ul>
-        </div>
-        <p className="text-sm text-muted-foreground">{proposal.explanation}</p>
-        <p className="text-lg font-semibold text-primary">
-          Estimated cost: {Number(proposal.estimated_cost).toFixed(2)} credits
-        </p>
         <div className="space-y-2">
           <Label htmlFor="campaign_name">Campaign name</Label>
           <input

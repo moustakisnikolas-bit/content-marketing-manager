@@ -1,0 +1,167 @@
+name: content-studio
+
+# Coolify-specific: functionally identical to docker-compose.yml +
+# docker-compose.prod.yml combined, but fully self-contained — Coolify's
+# docker-compose deployment does not resolve the `include:` directive
+# those two files use (confirmed live: it fails with "depends on undefined
+# service" for anything only defined in the included file), so this single
+# file inlines every service instead. docker-compose.yml/docker-compose.prod.yml
+# remain the source of truth for local dev/testing (include: works fine
+# there via the plain `docker compose` CLI) — keep both in sync by hand if
+# either changes; this is duplication accepted deliberately rather than
+# fighting Coolify's compose parser.
+#
+# Internal-only services (postgres, redis, temporal, opa, openbao,
+# seaweedfs, otel-collector, prometheus, grafana) do NOT publish host
+# ports here, unlike the local dev-testing file — nothing outside the
+# Docker network needs to reach them directly on a real server, and this
+# avoids port conflicts with any other project sharing this VPS later.
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: content_studio
+  POSTGRES_PASSWORD: content_studio_dev
+  POSTGRES_DB: content_studio
+
+x-backend-env: &backend-env
+  CS_DATABASE_URL: postgresql+asyncpg://content_studio:content_studio_dev@postgres:5432/content_studio
+  CS_REDIS_URL: redis://redis:6379/0
+  CS_OBJECT_STORAGE_ENDPOINT: http://seaweedfs:8333
+  CS_OBJECT_STORAGE_BUCKET: content-studio-assets
+  CS_OBJECT_STORAGE_ACCESS_KEY: dev
+  CS_OBJECT_STORAGE_SECRET_KEY: dev-secret
+  CS_TEMPORAL_TARGET: temporal:7233
+  CS_TEMPORAL_NAMESPACE: default
+  CS_TEMPORAL_TASK_QUEUE: content-studio
+  CS_OPA_URL: http://opa:8181
+  CS_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+  CS_ENVIRONMENT: ${CS_ENVIRONMENT:-production}
+  CS_JWT_SECRET: ${CS_JWT_SECRET:-dev-only-change-me}
+  CS_OPENBAO_URL: http://openbao:8200
+  CS_OPENBAO_TOKEN: ${CS_OPENBAO_TOKEN:-dev-root-token}
+  CS_AI_TEXT_API_KEY: ${CS_AI_TEXT_API_KEY:-}
+  CS_REPLICATE_API_TOKEN: ${CS_REPLICATE_API_TOKEN:-}
+  CS_PUBLIC_API_BASE_URL: ${CS_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
+  CS_CORS_ALLOWED_ORIGINS: ${CS_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+  CS_SOCIAL_OAUTH_REDIRECT_BASE_URL: ${CS_SOCIAL_OAUTH_REDIRECT_BASE_URL:-http://localhost:3000/oauth/callback}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      <<: *postgres-env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U content_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  temporal:
+    image: temporalio/auto-setup:1.28
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: content_studio
+      POSTGRES_PWD: content_studio_dev
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  opa:
+    image: openpolicyagent/opa:latest-envoy
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      - ../opa-policies:/policies:ro
+
+  openbao:
+    image: openbao/openbao:latest
+    cap_add:
+      - IPC_LOCK
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: ["server", "-s3", "-s3.port=8333", "-dir=/data", "-master.volumeSizeLimitMB=1024"]
+    volumes:
+      - seaweedfs_data:/data
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: dev
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  backend:
+    build:
+      context: ../../backend
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    restart: on-failure
+
+  worker:
+    build:
+      context: ../../backend
+    command: ["python", "-m", "content_studio.workflows.worker"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    restart: on-failure
+
+  frontend:
+    build:
+      context: ../../apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+  seaweedfs_data:
+  grafana_data:

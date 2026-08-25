@@ -7,6 +7,7 @@ from content_studio.config import get_settings
 from content_studio.modules.publishing.exceptions import InvalidOAuthState
 
 _STATE_TTL_MINUTES = 10
+_PLUGIN_PAIRING_TTL_MINUTES = 30
 
 
 def create_oauth_state(*, organization_id: uuid.UUID, workspace_id: uuid.UUID, user_id: uuid.UUID, platform: str) -> str:
@@ -72,4 +73,36 @@ def decode_pending_connection_token(token: str) -> dict:
         raise InvalidOAuthState(str(exc)) from exc
     if payload.get("type") != "pending_connection":
         raise InvalidOAuthState("not a pending_connection token")
+    return payload
+
+
+def create_plugin_pairing_token(*, organization_id: uuid.UUID, workspace_id: uuid.UUID, user_id: uuid.UUID) -> str:
+    """Identifies which workspace a WooCommerce plugin install belongs to —
+    the plugin runs server-side on the store's own hosting with no browser
+    session and no login to this app, so this signed token (generated from
+    the logged-in web app, pasted into the plugin's settings screen) is the
+    only thing carrying that identity across. Longer TTL than the other two
+    token types (30 min vs 10) since installing/configuring a WordPress
+    plugin realistically takes longer than an OAuth redirect round-trip."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    payload = {
+        "type": "plugin_pairing",
+        "organization_id": str(organization_id),
+        "workspace_id": str(workspace_id),
+        "user_id": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(minutes=_PLUGIN_PAIRING_TTL_MINUTES),
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_plugin_pairing_token(token: str) -> dict:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError as exc:
+        raise InvalidOAuthState(str(exc)) from exc
+    if payload.get("type") != "plugin_pairing":
+        raise InvalidOAuthState("not a plugin_pairing token")
     return payload

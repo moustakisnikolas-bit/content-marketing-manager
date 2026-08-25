@@ -25,6 +25,39 @@ interface RequestOptions extends Omit<RequestInit, "body"> {
   auth?: boolean;
 }
 
+// Refresh tokens are single-use on the backend (each /auth/refresh call
+// revokes the one it was given and issues a new pair) — several components
+// fetching on the same page load can all hit a 401 within milliseconds of
+// each other, so every concurrent 401 must await this *same* in-flight
+// call rather than each independently spending the one refresh token,
+// which would only let the first succeed and log everyone else out.
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const { refreshToken, user } = useAuthStore.getState();
+      if (!refreshToken || !user) return null;
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!response.ok) return null;
+        const tokens = (await response.json()) as { access_token: string; refresh_token: string };
+        useAuthStore.getState().setSession({ accessToken: tokens.access_token, refreshToken: tokens.refresh_token, user });
+        return tokens.access_token;
+      } catch {
+        return null;
+      }
+    })().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { auth = true, body, headers, ...rest } = options;
   const finalHeaders = new Headers(headers);
@@ -44,11 +77,26 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (workspaceId) finalHeaders.set("X-Workspace-Id", workspaceId);
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  let response = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     headers: finalHeaders,
     body: finalBody,
   });
+
+  if (response.status === 401 && auth) {
+    const newAccessToken = await refreshAccessToken();
+    if (newAccessToken) {
+      finalHeaders.set("Authorization", `Bearer ${newAccessToken}`);
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        ...rest,
+        headers: finalHeaders,
+        body: finalBody,
+      });
+    } else {
+      useAuthStore.getState().clearSession();
+      if (typeof window !== "undefined") window.location.href = "/login";
+    }
+  }
 
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorMessage(response));

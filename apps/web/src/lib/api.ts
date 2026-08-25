@@ -627,6 +627,9 @@ export const api = {
     consumer_secret: string;
   }) => apiClient.post<StoreConnectionDetailOut>("/commerce/connect/api-key", payload),
 
+  createPluginPairingCode: () =>
+    apiClient.post<{ pairing_token: string; expires_in_minutes: number }>("/commerce/connect/plugin-pairing-code"),
+
   listStores: () => apiClient.get<StoreConnectionDetailOut[]>("/commerce/stores"),
 
   syncStoreProducts: (connectionId: string) =>

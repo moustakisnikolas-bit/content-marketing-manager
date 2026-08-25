@@ -2,6 +2,19 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+class StoreResponseError(RuntimeError):
+    """A store's API returned a 2xx status but not the actual API response
+    expected — seen in practice against a real store sitting behind
+    Cloudflare-style bot protection, which can serve an HTML "checking
+    your browser" interstitial with a 200 status instead of proxying the
+    request through to the store platform. A bare status-code check can't
+    tell that apart from a genuine successful response, so adapters must
+    verify the body is actually parseable JSON before trusting a 2xx,
+    raising this instead of silently treating the interstitial as success
+    (which would otherwise mean *any* credentials, including wrong ones,
+    "connect" successfully)."""
+
+
 @dataclass(frozen=True)
 class StoreOAuthToken:
     access_token: str

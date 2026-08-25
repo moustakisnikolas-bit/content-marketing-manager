@@ -4,8 +4,55 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { api } from "@/lib/api";
+import { api, type ProductOut } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
+
+function TopProductsCard() {
+  const { data: products, isLoading } = useQuery({ queryKey: ["commerce", "products"], queryFn: api.listProducts });
+
+  const top3 = (products ?? [])
+    .filter((p) => p.status === "active" && p.price !== null)
+    .sort((a, b) => Number(b.price) - Number(a.price))
+    .slice(0, 3);
+
+  return (
+    <Card className="border-primary/30">
+      <CardHeader>
+        <CardTitle>Top products from your store</CardTitle>
+        <CardDescription>Your 3 highest-priced active products from your connected store.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : top3.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No products yet —{" "}
+            <Link href="/ecommerce" className="text-primary underline-offset-4 hover:underline">
+              connect a store
+            </Link>{" "}
+            to see your top products here.
+          </p>
+        ) : (
+          <ol className="space-y-3">
+            {top3.map((product: ProductOut, i: number) => (
+              <li key={product.id} className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                    {i + 1}
+                  </span>
+                  <span className="truncate text-sm font-medium">{product.title}</span>
+                </div>
+                <span className="shrink-0 text-sm font-semibold">
+                  {product.price} {product.currency ?? ""}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user);
@@ -27,9 +74,11 @@ export default function DashboardPage() {
           <CardDescription>Tell us your goal and we&apos;ll build a plan around it.</CardDescription>
         </CardHeader>
         <CardContent>
-          <Button render={<Link href="/marketing-manager" />}>Start a campaign</Button>
+          <Button render={<Link href="/quick-start" />} nativeButton={false}>Start a campaign</Button>
         </CardContent>
       </Card>
+
+      <TopProductsCard />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

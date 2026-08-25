@@ -16,12 +16,27 @@ class LiteLLMTextAdapter:
     def __init__(self, settings: Settings) -> None:
         self._base_url = settings.ai_text_base_url.rstrip("/")
         self._api_key = settings.ai_text_api_key
+        self._output_language = settings.ai_text_output_language
 
     async def generate_text(self, *, prompt: str, model: str, params: dict) -> str:
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        messages = []
+        if self._output_language:
+            # Without this, output language just follows whatever language
+            # the brief happens to be written in — most briefs here are
+            # typed in English, which silently produced English content
+            # regardless of the workspace's actual target audience.
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"Always respond in {self._output_language}, regardless of what language the "
+                    f"brief below is written in.",
+                }
+            )
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             **params,
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as client:

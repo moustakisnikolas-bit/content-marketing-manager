@@ -1,12 +1,12 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { WooCommerceConnectForm } from "@/components/woocommerce-connect-form";
 import { api, type StorePlatform } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 
@@ -14,81 +14,6 @@ const PLATFORM_LABELS: Record<StorePlatform, string> = {
   woocommerce: "WooCommerce",
   shopify: "Shopify",
 };
-
-function WooCommerceConnectForm({ onConnected }: { onConnected: () => void }) {
-  const [storeDomain, setStoreDomain] = useState("");
-  const [consumerKey, setConsumerKey] = useState("");
-  const [consumerSecret, setConsumerSecret] = useState("");
-  const [connecting, setConnecting] = useState(false);
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setConnecting(true);
-    try {
-      await api.connectStoreWithCredentials({
-        platform: "woocommerce",
-        store_domain: storeDomain,
-        consumer_key: consumerKey,
-        consumer_secret: consumerSecret,
-      });
-      toast.success("Connected WooCommerce");
-      setStoreDomain("");
-      setConsumerKey("");
-      setConsumerSecret("");
-      onConnected();
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Couldn't connect — check your store URL and keys.";
-      toast.error(message);
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3 rounded-md border border-border p-3">
-      <p className="text-sm font-medium">WooCommerce</p>
-      <p className="text-xs text-muted-foreground">
-        Generate a Consumer Key/Secret in WP Admin → WooCommerce → Settings → Advanced → REST API (permissions
-        &quot;Read/Write&quot;), then paste them here. Keys never leave your account — sealed on the way in, never
-        shown again.
-      </p>
-      <div className="space-y-1">
-        <Label htmlFor="wc-domain">Store URL</Label>
-        <Input
-          id="wc-domain"
-          placeholder="https://yourshop.com"
-          value={storeDomain}
-          onChange={(e) => setStoreDomain(e.target.value)}
-          required
-        />
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor="wc-key">Consumer Key</Label>
-        <Input
-          id="wc-key"
-          placeholder="ck_..."
-          value={consumerKey}
-          onChange={(e) => setConsumerKey(e.target.value)}
-          required
-        />
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor="wc-secret">Consumer Secret</Label>
-        <Input
-          id="wc-secret"
-          type="password"
-          placeholder="cs_..."
-          value={consumerSecret}
-          onChange={(e) => setConsumerSecret(e.target.value)}
-          required
-        />
-      </div>
-      <Button type="submit" size="sm" disabled={connecting}>
-        {connecting ? "Connecting..." : "Connect"}
-      </Button>
-    </form>
-  );
-}
 
 function ConnectStoreCard() {
   const queryClient = useQueryClient();
@@ -143,6 +68,67 @@ function ConnectStoreCard() {
         </div>
         {connectedPlatforms.size === 0 && (
           <p className="text-xs text-muted-foreground">Not connected to any store yet.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PluginPairingCard() {
+  const [pairing, setPairing] = useState<{ token: string; expiresInMinutes: number } | null>(null);
+  const [generating, setGenerating] = useState(false);
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const result = await api.createPluginPairingCode();
+      setPairing({ token: result.pairing_token, expiresInMinutes: result.expires_in_minutes });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Couldn't generate a pairing code.";
+      toast.error(message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!pairing) return;
+    try {
+      await navigator.clipboard.writeText(pairing.token);
+      toast.success("Copied");
+    } catch {
+      toast.error("Couldn't copy — select and copy the code manually.");
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Connect automatically with our WordPress plugin</CardTitle>
+        <CardDescription>
+          Skip generating API keys yourself — install the plugin on your WooCommerce site and it connects for you.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!pairing ? (
+          <Button size="sm" disabled={generating} onClick={handleGenerate}>
+            {generating ? "Generating..." : "Generate pairing code"}
+          </Button>
+        ) : (
+          <div className="space-y-2">
+            <ol className="list-inside list-decimal text-sm text-muted-foreground">
+              <li>Install the plugin on your WordPress site</li>
+              <li>Paste this code into its settings screen</li>
+              <li>Click Connect there — it&apos;ll finish here automatically</li>
+            </ol>
+            <div className="flex gap-2">
+              <Input readOnly value={pairing.token} className="font-mono text-xs" />
+              <Button type="button" size="sm" variant="outline" onClick={handleCopy}>
+                Copy
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Expires in {pairing.expiresInMinutes} minutes.</p>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -220,6 +206,7 @@ export default function EcommercePage() {
         <p className="text-muted-foreground">Connect your store to generate product-aware content.</p>
       </div>
       <ConnectStoreCard />
+      <PluginPairingCard />
       <ConnectedStoresCard />
     </div>
   );

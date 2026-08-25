@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, type ConnectableAccountOut } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
+import { POST_OAUTH_REDIRECT_KEY } from "@/lib/oauth-redirect";
 
 function OAuthCallbackInner() {
   const router = useRouter();
@@ -16,16 +17,28 @@ function OAuthCallbackInner() {
   const [pending, setPending] = useState<{ pendingToken: string; accounts: ConnectableAccountOut[] } | null>(null);
   const [selecting, setSelecting] = useState(false);
   const started = useRef(false);
+  // Where to land after a successful connect — defaults to /calendar (today's
+  // behavior) but /quick-start sets this before redirecting to Meta, since a
+  // full-page OAuth redirect would otherwise strand it back here instead of
+  // returning to the wizard. Read once and cleared immediately so a stale
+  // value never redirects an unrelated, later connect-from-/calendar flow.
+  const redirectTarget = useRef("/calendar");
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
 
+    const stored = sessionStorage.getItem(POST_OAUTH_REDIRECT_KEY);
+    if (stored) {
+      redirectTarget.current = stored;
+      sessionStorage.removeItem(POST_OAUTH_REDIRECT_KEY);
+    }
+
     const code = searchParams.get("code");
     const state = searchParams.get("state");
     if (!code || !state) {
       toast.error("Missing code/state from the redirect — couldn't complete the connection.");
-      router.replace("/calendar");
+      router.replace(redirectTarget.current);
       return;
     }
 
@@ -40,11 +53,11 @@ function OAuthCallbackInner() {
         }
         toast.success(`Connected ${result.connection.platform}`);
         await queryClient.invalidateQueries({ queryKey: ["publishing", "connections"] });
-        router.replace("/calendar");
+        router.replace(redirectTarget.current);
       } catch (err) {
         const message = err instanceof ApiError ? err.message : "Couldn't complete the connection.";
         toast.error(message);
-        router.replace("/calendar");
+        router.replace(redirectTarget.current);
       }
     })();
   }, [searchParams, router, queryClient]);
@@ -56,7 +69,7 @@ function OAuthCallbackInner() {
       await api.selectPage(pending.pendingToken, account.external_account_id);
       toast.success(`Connected ${account.external_account_name}`);
       await queryClient.invalidateQueries({ queryKey: ["publishing", "connections"] });
-      router.replace("/calendar");
+      router.replace(redirectTarget.current);
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Couldn't complete the connection.";
       toast.error(message);

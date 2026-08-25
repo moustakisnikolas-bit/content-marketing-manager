@@ -16,6 +16,18 @@ class ConnectWithCredentialsRequest(BaseModel):
     consumer_secret: str = Field(min_length=1, max_length=500)
 
 
+class PluginPairingCodeOut(BaseModel):
+    pairing_token: str
+    expires_in_minutes: int
+
+
+class ConnectViaPluginRequest(BaseModel):
+    pairing_token: str
+    store_domain: str = Field(min_length=1, max_length=500)
+    consumer_key: str = Field(min_length=1, max_length=500)
+    consumer_secret: str = Field(min_length=1, max_length=500)
+
+
 class CapabilityOut(BaseModel):
     capability: str
     is_available: bool

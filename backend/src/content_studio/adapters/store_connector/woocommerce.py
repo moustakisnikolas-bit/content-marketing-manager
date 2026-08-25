@@ -1,6 +1,7 @@
 import json
 import uuid
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -11,6 +12,7 @@ from content_studio.ports.store_connector import (
     ProductData,
     ProductPage,
     StoreOAuthToken,
+    StoreResponseError,
     VariantData,
 )
 
@@ -54,6 +56,38 @@ def _decode_credentials(access_token: str) -> tuple[str, str, str]:
     return data["store_domain"], data["consumer_key"], data["consumer_secret"]
 
 
+def _require_json(response: httpx.Response) -> Any:
+    """raise_for_status() only catches 4xx/5xx — a store behind bot
+    protection can return 200 with an HTML challenge page instead of the
+    real API response, which would otherwise be silently treated as
+    success (see StoreResponseError's docstring). Use this instead of a
+    bare raise_for_status() anywhere the caller needs to trust the result,
+    not just the status code."""
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise StoreResponseError(
+            f"Store returned a non-JSON response (HTTP {response.status_code}) from "
+            f"{response.url} — this can happen when a firewall or bot-protection "
+            "service (e.g. Cloudflare) blocks the request before it reaches "
+            "WooCommerce. Check the store's security settings allow API requests "
+            "from this server."
+        ) from exc
+
+
+def _is_json_response(response: httpx.Response) -> bool:
+    """Soft version of _require_json for capability checks, which report
+    unavailable rather than raise."""
+    if response.status_code != 200:
+        return False
+    try:
+        response.json()
+    except ValueError:
+        return False
+    return True
+
+
 class WooCommerceAdapter:
     """Real WooCommerce REST API v3 adapter. Unlike Meta/Shopify's OAuth2
     flow, WooCommerce credentials (a Consumer Key/Secret pair) are
@@ -80,7 +114,7 @@ class WooCommerceAdapter:
         auth = (consumer_key, consumer_secret)
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)) as client:
             response = await client.get(f"{base}/wp-json/wc/v3/products", params={"per_page": 1}, auth=auth)
-            response.raise_for_status()
+            _require_json(response)
 
         return StoreOAuthToken(
             access_token=_encode_credentials(
@@ -112,9 +146,9 @@ class WooCommerceAdapter:
                             "secret": webhook_secret,
                         },
                     )
-                    response.raise_for_status()
+                    _require_json(response)
                     registered += 1
-                except httpx.HTTPError:
+                except (httpx.HTTPError, StoreResponseError):
                     # Best-effort — product sync still works via the
                     # manual/on-demand "Sync now" path even if webhook
                     # auto-provisioning fails (insufficient key scope, etc).
@@ -128,10 +162,10 @@ class WooCommerceAdapter:
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)) as client:
             products_response = await client.get(f"{base}/wp-json/wc/v3/products", params={"per_page": 1}, auth=auth)
-            read_products = products_response.status_code == 200
+            read_products = _is_json_response(products_response)
 
             orders_response = await client.get(f"{base}/wp-json/wc/v3/orders", params={"per_page": 1}, auth=auth)
-            read_orders = orders_response.status_code == 200
+            read_orders = _is_json_response(orders_response)
 
         return [
             CapabilityResult(capability="read_products", is_available=read_products),
@@ -152,8 +186,7 @@ class WooCommerceAdapter:
             response = await client.get(
                 f"{base}/wp-json/wc/v3/products", params={"page": page, "per_page": _PAGE_SIZE}, auth=auth
             )
-            response.raise_for_status()
-            raw_products = response.json()
+            raw_products = _require_json(response)
 
             products = []
             for raw in raw_products:

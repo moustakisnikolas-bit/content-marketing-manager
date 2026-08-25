@@ -24,9 +24,11 @@ from content_studio.modules.commerce.schemas import (
     CampaignProposalOut,
     CapabilityOut,
     ConnectionDetailOut,
+    ConnectViaPluginRequest,
     ConnectWithCredentialsRequest,
     GenerateAbandonedCartContentRequest,
     GenerateProductCampaignRequest,
+    PluginPairingCodeOut,
     ProductAssetOut,
     ProductDetailOut,
     ProductOut,
@@ -38,9 +40,14 @@ from content_studio.modules.commerce.schemas import (
 from content_studio.modules.commerce.service import CommerceService
 from content_studio.modules.identity.models import User
 from content_studio.modules.publishing.exceptions import InvalidOAuthState
-from content_studio.modules.publishing.oauth_state import create_oauth_state, decode_oauth_state
+from content_studio.modules.publishing.oauth_state import (
+    create_oauth_state,
+    create_plugin_pairing_token,
+    decode_oauth_state,
+    decode_plugin_pairing_token,
+)
 from content_studio.ports.secrets import SecretsPort
-from content_studio.ports.store_connector import StoreConnectorPort
+from content_studio.ports.store_connector import StoreConnectorPort, StoreResponseError
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 
@@ -120,7 +127,53 @@ async def connect_with_api_key(
             platform=body.platform, store_domain=body.store_domain, consumer_key=body.consumer_key,
             consumer_secret=body.consumer_secret,
         )
-    except httpx.HTTPStatusError as exc:
+    except (httpx.HTTPStatusError, StoreResponseError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Could not verify store credentials: {exc}") from exc
+
+    repo = CommerceRepository(session)
+    return await _connection_detail(repo, connection)
+
+
+@router.post("/connect/plugin-pairing-code", response_model=PluginPairingCodeOut)
+async def create_plugin_pairing_code(
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+) -> PluginPairingCodeOut:
+    """Generated from the logged-in web app and pasted into the WooCommerce
+    plugin's settings screen — the plugin runs server-side on the store's
+    own hosting with no browser session, so this signed token is the only
+    thing telling it which workspace to attach a connection to."""
+    token = create_plugin_pairing_token(
+        organization_id=context.organization_id, workspace_id=context.workspace_id, user_id=current_user.id,
+    )
+    return PluginPairingCodeOut(pairing_token=token, expires_in_minutes=30)
+
+
+@router.post("/connect/plugin", response_model=ConnectionDetailOut, status_code=status.HTTP_201_CREATED)
+async def connect_via_plugin(
+    body: ConnectViaPluginRequest,
+    session: AsyncSession = Depends(get_db_session),
+    secrets: SecretsPort = Depends(get_secrets),
+) -> ConnectionDetailOut:
+    """Called by the WooCommerce plugin itself (wp_remote_post from the
+    store's own server), not a logged-in browser — no Bearer auth, same
+    reasoning as /oauth/callback. The plugin generates its own WooCommerce
+    API key pair internally and sends it here alongside the pairing token
+    it was given; everything past validating that token reuses
+    connect_store_with_credentials exactly as the manual-form path does."""
+    try:
+        claims = decode_plugin_pairing_token(body.pairing_token)
+    except InvalidOAuthState as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    service = CommerceService(session, secrets=secrets, store_adapter_factory=_adapter_factory)
+    try:
+        connection = await service.connect_store_with_credentials(
+            organization_id=uuid.UUID(claims["organization_id"]), workspace_id=uuid.UUID(claims["workspace_id"]),
+            user_id=uuid.UUID(claims["user_id"]), platform="woocommerce", store_domain=body.store_domain,
+            consumer_key=body.consumer_key, consumer_secret=body.consumer_secret,
+        )
+    except (httpx.HTTPStatusError, StoreResponseError) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Could not verify store credentials: {exc}") from exc
 
     repo = CommerceRepository(session)
