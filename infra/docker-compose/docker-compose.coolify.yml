@@ -166,8 +166,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Host port 8000 is taken by Coolify's own dashboard/API on this VPS —
+    # 8001 avoids the collision (confirmed live: plain 8000:8000 failed
+    # with "port is already allocated").
     ports:
-      - "8000:8000"
+      - "8001:8000"
     restart: on-failure
 
   worker:
