@@ -16,6 +16,16 @@ name: content-studio
 # ports here, unlike the local dev-testing file — nothing outside the
 # Docker network needs to reach them directly on a real server, and this
 # avoids port conflicts with any other project sharing this VPS later.
+#
+# All relative paths (build contexts, bind mounts) are relative to the
+# REPO ROOT, not to this file's own directory — Coolify runs
+# `docker compose --project-directory <repo-root> -f <this file>`, and
+# Compose resolves relative paths against --project-directory when it's
+# explicitly passed, not against the compose file's location (confirmed
+# live: `context: ../../backend` resolved to `/backend`, i.e. two levels
+# above repo root, not `<repo-root>/backend`). This differs from local
+# dev, where plain `docker compose` run from infra/docker-compose/
+# resolves relative paths against that directory instead.
 
 x-postgres-env: &postgres-env
   POSTGRES_USER: content_studio
@@ -51,7 +61,7 @@ services:
       <<: *postgres-env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
+      - ./infra/docker-compose/postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U content_studio"]
       interval: 5s
@@ -86,7 +96,7 @@ services:
     image: openpolicyagent/opa:latest-envoy
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
     volumes:
-      - ../opa-policies:/policies:ro
+      - ./infra/opa-policies:/policies:ro
 
   openbao:
     image: openbao/openbao:latest
@@ -106,12 +116,12 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - ./infra/docker-compose/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
 
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/docker-compose/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
     image: grafana/grafana:latest
@@ -119,14 +129,14 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: dev
       GF_AUTH_ANONYMOUS_ENABLED: "true"
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/docker-compose/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
 
   backend:
     build:
-      context: ../../backend
+      context: ./backend
     environment:
       <<: *backend-env
     depends_on:
@@ -138,7 +148,7 @@ services:
 
   worker:
     build:
-      context: ../../backend
+      context: ./backend
     command: ["python", "-m", "content_studio.workflows.worker"]
     environment:
       <<: *backend-env
@@ -153,7 +163,7 @@ services:
 
   frontend:
     build:
-      context: ../../apps/web
+      context: ./apps/web
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
     depends_on:
