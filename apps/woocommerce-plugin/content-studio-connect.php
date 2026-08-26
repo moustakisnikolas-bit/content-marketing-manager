@@ -2,22 +2,31 @@
 /**
  * Plugin Name: Content Studio Connect
  * Description: Connects this WooCommerce store to AI Content Studio in one click — no need to generate REST API keys yourself.
- * Version: 0.1.0
+ * Version: 0.1.1
  * Requires PHP: 7.4
- * Requires Plugins: woocommerce
  * License: GPL-2.0-or-later
  *
  * Deliberately thin, per 13_WOOCOMMERCE_PLUGIN_ARCHITECTURE.md's
  * "Thin-Plugin Principle" — this plugin only handles the connection
  * handshake. Generation, planning, publishing, analytics, and billing all
  * stay in the SaaS backend; nothing here talks to any AI provider.
+ *
+ * No "Requires Plugins: woocommerce" header on purpose — that WP 6.5+
+ * header actively parses/cross-checks against installed plugin slugs via
+ * WP_Plugin_Dependencies, and was the prime suspect behind a real
+ * "Plugin file does not exist" activation failure on a live site (debug.log
+ * showed "Undefined property: stdClass::$plugin" in
+ * wp-includes/class-wp-list-util.php right when activation was attempted —
+ * that file backs the plugin dependency/update-check machinery this header
+ * triggers). The runtime class_exists('WooCommerce') check below already
+ * covers this safely without touching that code path.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'CS_CONNECT_VERSION', '0.1.0' );
+define( 'CS_CONNECT_VERSION', '0.1.1' );
 
 // Must match the backend's own CS_PUBLIC_API_BASE_URL (see
 // backend/.env.example). Currently the personal-use VPS deployment — swap
