@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Content Studio Connect
  * Description: Connects this WooCommerce store to AI Content Studio in one click — no need to generate REST API keys yourself.
- * Version: 0.1.1
+ * Version: 0.1.2
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
  *
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'CS_CONNECT_VERSION', '0.1.1' );
+define( 'CS_CONNECT_VERSION', '0.1.2' );
 
 // Must match the backend's own CS_PUBLIC_API_BASE_URL (see
 // backend/.env.example). Currently the personal-use VPS deployment — swap
@@ -72,6 +72,17 @@ function cs_connect_render_settings_page() {
 		<h1><?php esc_html_e( 'Content Studio', 'content-studio-connect' ); ?></h1>
 
 		<?php cs_connect_render_notices(); ?>
+
+		<h2><?php esc_html_e( 'Connection diagnostics', 'content-studio-connect' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'Temporary — checks whether this site can reach Content Studio from a real web request (not SSH/WP-CLI), since some hosting firewalls block one but not the other.', 'content-studio-connect' ); ?>
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<?php wp_nonce_field( 'cs_connect_test', 'cs_connect_test_nonce' ); ?>
+			<input type="hidden" name="action" value="cs_connect_test" />
+			<?php submit_button( __( 'Test connection', 'content-studio-connect' ), 'secondary' ); ?>
+		</form>
+		<hr />
 
 		<?php if ( $connected ) : ?>
 			<p><strong><?php esc_html_e( 'This store is connected.', 'content-studio-connect' ); ?></strong></p>
@@ -129,9 +140,63 @@ function cs_connect_render_notices() {
 		printf( '<div class="notice notice-error"><p>%s</p></div>', esc_html( $error ) );
 	}
 
+	$test_result = get_transient( 'cs_connect_test_result' );
+	if ( $test_result ) {
+		delete_transient( 'cs_connect_test_result' );
+		$class = $test_result['success'] ? 'notice-success' : 'notice-error';
+		printf( '<div class="notice %s"><p>%s</p></div>', esc_attr( $class ), esc_html( $test_result['message'] ) );
+	}
+
 	if ( isset( $_GET['connected'] ) && '1' === $_GET['connected'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only query arg, no state change.
 		printf( '<div class="notice notice-success"><p>%s</p></div>', esc_html__( 'Connected!', 'content-studio-connect' ) );
 	}
+}
+
+add_action( 'admin_post_cs_connect_test', 'cs_connect_handle_test' );
+
+/**
+ * Temporary diagnostic — runs the same wp_remote_get() reachability check
+ * already confirmed working via `wp eval` over SSH/WP-CLI, but triggered
+ * through a real web request (PHP-FPM), to isolate whether a hosting
+ * firewall/WAF (Imunify360 and similar are common on Plesk) blocks
+ * web-process-initiated outbound requests differently from shell-initiated
+ * ones — a real, confirmed-possible failure mode, not a hypothetical.
+ */
+function cs_connect_handle_test() {
+	if ( ! current_user_can( 'manage_woocommerce' ) ) {
+		wp_die( esc_html__( 'You do not have permission to do this.', 'content-studio-connect' ) );
+	}
+	check_admin_referer( 'cs_connect_test', 'cs_connect_test_nonce' );
+
+	$start    = microtime( true );
+	$response = wp_remote_get( trailingslashit( CS_CONNECT_API_BASE_URL ) . 'docs', array( 'timeout' => 15 ) );
+	$elapsed  = round( microtime( true ) - $start, 2 );
+
+	if ( is_wp_error( $response ) ) {
+		set_transient(
+			'cs_connect_test_result',
+			array(
+				'success' => false,
+				/* translators: 1: elapsed seconds, 2: WP_Error message */
+				'message' => sprintf( __( 'Failed after %1$ss: %2$s', 'content-studio-connect' ), $elapsed, $response->get_error_message() ),
+			),
+			60
+		);
+	} else {
+		$code = wp_remote_retrieve_response_code( $response );
+		set_transient(
+			'cs_connect_test_result',
+			array(
+				'success' => true,
+				/* translators: 1: HTTP status code, 2: elapsed seconds */
+				'message' => sprintf( __( 'Reached Content Studio in %2$ss (HTTP %1$d) — this web request succeeded.', 'content-studio-connect' ), $code, $elapsed ),
+			),
+			60
+		);
+	}
+
+	wp_safe_redirect( admin_url( 'admin.php?page=content-studio-connect' ) );
+	exit;
 }
 
 add_action( 'admin_post_cs_connect_pair', 'cs_connect_handle_pair' );
