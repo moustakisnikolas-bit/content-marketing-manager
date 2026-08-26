@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from html.parser import HTMLParser
@@ -132,28 +133,36 @@ class WooCommerceAdapter:
         base = store_domain.rstrip("/")
         auth = (consumer_key, consumer_secret)
 
-        registered = 0
+        async def _register_one(client: httpx.AsyncClient, topic: str) -> bool:
+            try:
+                response = await client.post(
+                    f"{base}/wp-json/wc/v3/webhooks",
+                    auth=auth,
+                    json={
+                        "name": f"content-studio-{topic}",
+                        "topic": topic,
+                        "delivery_url": delivery_url,
+                        "secret": webhook_secret,
+                    },
+                )
+                _require_json(response)
+                return True
+            except (httpx.HTTPError, StoreResponseError):
+                # Best-effort — product sync still works via the
+                # manual/on-demand "Sync now" path even if webhook
+                # auto-provisioning fails (insufficient key scope, etc).
+                return False
+
+        # Concurrent, not sequential — each topic is an independent HTTP
+        # round-trip to the store's own REST API, and stores sitting behind
+        # bot-protection/WAF interstitials (see windows-dev-gotchas #23-#24)
+        # can make each one individually slow; run one-after-another and the
+        # cumulative wait can exceed callers' own timeouts (confirmed live:
+        # the WooCommerce plugin's connect request timed out at 20s against
+        # ceri.gr with this sequential, even though nothing was broken).
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)) as client:
-            for topic in _WEBHOOK_TOPICS:
-                try:
-                    response = await client.post(
-                        f"{base}/wp-json/wc/v3/webhooks",
-                        auth=auth,
-                        json={
-                            "name": f"content-studio-{topic}",
-                            "topic": topic,
-                            "delivery_url": delivery_url,
-                            "secret": webhook_secret,
-                        },
-                    )
-                    _require_json(response)
-                    registered += 1
-                except (httpx.HTTPError, StoreResponseError):
-                    # Best-effort — product sync still works via the
-                    # manual/on-demand "Sync now" path even if webhook
-                    # auto-provisioning fails (insufficient key scope, etc).
-                    continue
-        return registered > 0
+            results = await asyncio.gather(*(_register_one(client, topic) for topic in _WEBHOOK_TOPICS))
+        return any(results)
 
     async def resolve_capabilities(self, *, access_token: str) -> list[CapabilityResult]:
         store_domain, consumer_key, consumer_secret = _decode_credentials(access_token)

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Content Studio Connect
  * Description: Connects this WooCommerce store to AI Content Studio in one click — no need to generate REST API keys yourself.
- * Version: 0.1.2
+ * Version: 0.1.3
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
  *
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'CS_CONNECT_VERSION', '0.1.2' );
+define( 'CS_CONNECT_VERSION', '0.1.3' );
 
 // Must match the backend's own CS_PUBLIC_API_BASE_URL (see
 // backend/.env.example). Currently the personal-use VPS deployment — swap
@@ -231,7 +231,11 @@ function cs_connect_handle_pair() {
 	$response = wp_remote_post(
 		trailingslashit( CS_CONNECT_API_BASE_URL ) . 'commerce/connect/plugin',
 		array(
-			'timeout' => 20,
+			// Backend validates credentials + registers webhooks with this
+			// store's own REST API as part of this same request — confirmed
+			// live that a slow/bot-protected store can legitimately take
+			// longer than 20s for that, even with nothing actually broken.
+			'timeout' => 45,
 			'headers' => array( 'Content-Type' => 'application/json' ),
 			'body'    => wp_json_encode(
 				array(
