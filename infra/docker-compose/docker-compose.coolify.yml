@@ -115,13 +115,36 @@ services:
         COPY infra/opa-policies /policies
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
 
+  # Real (non-dev) OpenBao: file storage on a persistent volume so sealed
+  # credentials survive container recreation (confirmed live: dev mode's
+  # in-memory storage was wiped on every Coolify redeploy, breaking every
+  # previously-connected store/social account each time — see
+  # windows-dev-gotchas). Production mode starts sealed after every restart
+  # and needs 2-of-3 unseal keys before it'll serve secrets again; bootstrap.sh
+  # automates that (init once, unseal every boot) using keys persisted on
+  # the same volume as the encrypted data itself — deliberately the same
+  # trust model as dev mode's env-var-visible root token (whoever can reach
+  # the VPS/volume already has the keys either way), accepted for this
+  # personal-use/pre-commercial stage. Revisit (e.g. real KMS auto-unseal,
+  # keys kept off-box) before real customer secrets are at stake.
   openbao:
-    image: openbao/openbao:latest
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM openbao/openbao:latest
+        USER root
+        RUN apk add --no-cache jq
+        COPY infra/docker-compose/openbao/config.hcl /openbao/config.hcl
+        COPY infra/docker-compose/openbao/bootstrap.sh /openbao/bootstrap.sh
+        RUN chmod +x /openbao/bootstrap.sh && mkdir -p /openbao/data
+        ENTRYPOINT []
+        CMD ["/openbao/bootstrap.sh"]
     cap_add:
       - IPC_LOCK
     environment:
-      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
-      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      CS_OPENBAO_TOKEN: ${CS_OPENBAO_TOKEN:-dev-root-token}
+    volumes:
+      - openbao_data:/openbao/data
 
   seaweedfs:
     image: chrislusf/seaweedfs:latest
@@ -202,3 +225,4 @@ volumes:
   postgres_data:
   seaweedfs_data:
   grafana_data:
+  openbao_data:
