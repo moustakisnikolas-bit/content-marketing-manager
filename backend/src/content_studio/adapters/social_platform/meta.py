@@ -13,16 +13,22 @@ from content_studio.ports.social_platform import (
 
 _GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
 _OAUTH_DIALOG_BASE = "https://www.facebook.com/v21.0/dialog/oauth"
-# All requested up front regardless of which platform (facebook/instagram)
-# the user is connecting — usable by app admins/testers without Meta App
-# Review, which is the whole point for a personal/single-shop deployment.
-_REQUESTED_SCOPES = (
-    "pages_show_list",
-    "pages_read_engagement",
-    "pages_manage_posts",
-    "instagram_basic",
-    "instagram_content_publish",
-)
+# TEMPORARY DIAGNOSTIC (revert once confirmed either way): stripped down to
+# one baseline scope to test whether Meta's live "Login is currently
+# unavailable... updating additional details" error is actually tied to the
+# number/sensitivity of requested permissions, or something else entirely
+# (most likely: normal propagation delay for a brand-new app) — App Review
+# shouldn't matter here at all since the account testing this is already
+# the app's own Admin, but this is a cheap way to confirm that directly
+# rather than assume it. Restore the full list below once resolved.
+_REQUESTED_SCOPES = ("public_profile",)
+# _REQUESTED_SCOPES = (
+#     "pages_show_list",
+#     "pages_read_engagement",
+#     "pages_manage_posts",
+#     "instagram_basic",
+#     "instagram_content_publish",
+# )
 _TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 _POLL_INTERVAL_SECONDS = 2
 _MAX_POLL_ATTEMPTS = 30  # ~60s ceiling for a container to finish processing
