@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Content Studio Connect
  * Description: Connects this WooCommerce store to AI Content Studio in one click — no need to generate REST API keys yourself.
- * Version: 0.1.3
+ * Version: 0.1.4
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
  *
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'CS_CONNECT_VERSION', '0.1.3' );
+define( 'CS_CONNECT_VERSION', '0.1.4' );
 
 // Must match the backend's own CS_PUBLIC_API_BASE_URL (see
 // backend/.env.example). Currently the personal-use VPS deployment — swap
@@ -99,6 +99,15 @@ function cs_connect_render_settings_page() {
 			<p class="description">
 				<?php esc_html_e( 'Opens Content Studio in a new tab — log in there (if not already) to finish connecting your social accounts.', 'content-studio-connect' ); ?>
 			</p>
+			<hr />
+			<p class="description">
+				<?php esc_html_e( 'Deleted this store from Content Studio\'s eCommerce page already? This plugin has no way to know that happened on its own — reset it here so you can paste a new pairing code.', 'content-studio-connect' ); ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<?php wp_nonce_field( 'cs_connect_reset', 'cs_connect_reset_nonce' ); ?>
+				<input type="hidden" name="action" value="cs_connect_reset" />
+				<?php submit_button( __( 'Disconnect', 'content-studio-connect' ), 'delete' ); ?>
+			</form>
 		<?php else : ?>
 			<p>
 				<?php esc_html_e( 'Paste the pairing code from your Content Studio account below — this store will connect automatically, no need to generate API keys yourself.', 'content-studio-connect' ); ?>
@@ -195,6 +204,26 @@ function cs_connect_handle_test() {
 		);
 	}
 
+	wp_safe_redirect( admin_url( 'admin.php?page=content-studio-connect' ) );
+	exit;
+}
+
+add_action( 'admin_post_cs_connect_reset', 'cs_connect_handle_reset' );
+
+/**
+ * Clears this plugin's own local "connected" flag only — deliberately does
+ * not (and cannot) reach into Content Studio to delete anything there;
+ * that's what the eCommerce page's own "Delete" button is for. This just
+ * lets the plugin catch up when a store was already deleted on that side,
+ * since there's no push notification back to WordPress when that happens.
+ */
+function cs_connect_handle_reset() {
+	if ( ! current_user_can( 'manage_woocommerce' ) ) {
+		wp_die( esc_html__( 'You do not have permission to do this.', 'content-studio-connect' ) );
+	}
+	check_admin_referer( 'cs_connect_reset', 'cs_connect_reset_nonce' );
+
+	delete_option( 'cs_connect_connected' );
 	wp_safe_redirect( admin_url( 'admin.php?page=content-studio-connect' ) );
 	exit;
 }
