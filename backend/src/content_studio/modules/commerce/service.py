@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.config import get_settings
@@ -163,6 +164,34 @@ class CommerceService:
                 is_available=result.is_available,
                 reason=result.reason,
             )
+        await self._session.commit()
+
+    async def disconnect_store(self, connection_id: uuid.UUID, *, user_id: uuid.UUID) -> None:
+        connection = await self._repo.get_connection_by_id(connection_id)
+        if connection is None:
+            raise StoreNotFound(str(connection_id))
+
+        # Best-effort — an unreachable OpenBao shouldn't block disconnecting
+        # the store; a missing/already-gone secret is already tolerated
+        # inside OpenBaoSecretsAdapter.delete() itself (404 is a no-op there).
+        for ref in (connection.access_token_secret_ref, connection.webhook_secret_ref):
+            try:
+                await self._secrets.delete(reference=ref)
+            except httpx.HTTPError:
+                pass
+
+        platform, store_domain = connection.platform, connection.store_domain
+        organization_id = connection.organization_id
+        await self._repo.delete_connection(connection)
+
+        await self._audit.record(
+            event_type="commerce.store_disconnected",
+            actor_type="user",
+            actor_id=str(user_id),
+            organization_id=organization_id,
+            summary=f"Disconnected {platform} store '{store_domain}'",
+            payload={"connection_id": str(connection_id), "platform": platform},
+        )
         await self._session.commit()
 
     async def sync_products(self, connection_id: uuid.UUID) -> SyncResult:

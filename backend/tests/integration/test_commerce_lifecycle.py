@@ -113,6 +113,50 @@ async def test_connect_store_with_credentials_seals_tokens(db_session: AsyncSess
     assert {c.capability for c in capabilities} == {c.capability for c in adapter.capabilities}
 
 
+async def test_disconnect_store_deletes_connection_and_secrets(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    secrets = FakeSecrets()
+    adapter = FakeStoreConnector()
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="shopify", code="fake-code",
+    )
+    access_ref, webhook_ref = connection.access_token_secret_ref, connection.webhook_secret_ref
+    assert access_ref in secrets.store
+    assert webhook_ref in secrets.store
+
+    await service.disconnect_store(connection.id, user_id=ctx["user_id"])
+
+    repo = CommerceRepository(db_session)
+    assert await repo.get_connection_by_id(connection.id) is None
+    assert access_ref not in secrets.store
+    assert webhook_ref not in secrets.store
+
+
+async def test_disconnect_store_cascade_deletes_products(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    secrets = FakeSecrets()
+    adapter = FakeStoreConnector()
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="shopify", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+
+    repo = CommerceRepository(db_session)
+    products_before = await repo.list_products_for_connection(connection.id)
+    assert len(products_before) > 0
+
+    await service.disconnect_store(connection.id, user_id=ctx["user_id"])
+
+    products_after = await repo.list_products_for_workspace(ctx["workspace_id"])
+    assert products_after == []
+
+
 async def test_webhook_with_product_topic_triggers_resync(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     secrets = FakeSecrets()

@@ -65,6 +65,14 @@ class CommerceRepository:
         connection.last_synced_at = datetime.now(UTC)
         await self._session.flush()
 
+    async def delete_connection(self, connection: StoreConnection) -> None:
+        # Products/variants/assets/capabilities/webhook deliveries all carry
+        # ondelete="CASCADE" on their FK to this table (see models.py), so
+        # a plain delete of the connection row is enough — Postgres cleans
+        # up the rest.
+        await self._session.delete(connection)
+        await self._session.flush()
+
     # -- Capabilities --------------------------------------------
 
     async def upsert_capability(

@@ -632,6 +632,8 @@ export const api = {
 
   listStores: () => apiClient.get<StoreConnectionDetailOut[]>("/commerce/stores"),
 
+  deleteStore: (connectionId: string) => apiClient.delete<void>(`/commerce/stores/${connectionId}`),
+
   syncStoreProducts: (connectionId: string) =>
     apiClient.post<SyncProductsResponse>(`/commerce/stores/${connectionId}/sync`),
 

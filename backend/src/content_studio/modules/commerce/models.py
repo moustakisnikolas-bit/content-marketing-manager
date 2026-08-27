@@ -59,7 +59,12 @@ class StoreConnection(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Ba
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="connected")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    capabilities: Mapped[list["StoreCapability"]] = relationship(back_populates="connection")
+    # passive_deletes=True: without it, SQLAlchemy's ORM tries to manage
+    # this relationship itself on delete by UPDATE-ing each child's FK to
+    # NULL first, which fails against store_connection_id's NOT NULL
+    # constraint — confirmed live via a real test. This defers entirely to
+    # the DB's own ondelete="CASCADE" on that FK instead.
+    capabilities: Mapped[list["StoreCapability"]] = relationship(back_populates="connection", passive_deletes=True)
 
 
 class StoreCapability(UUIDPrimaryKeyMixin, Base):

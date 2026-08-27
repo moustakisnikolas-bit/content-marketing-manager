@@ -138,6 +138,7 @@ function PluginPairingCard() {
 function ConnectedStoresCard() {
   const queryClient = useQueryClient();
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const { data: stores } = useQuery({ queryKey: ["commerce", "stores"], queryFn: api.listStores });
 
@@ -152,6 +153,22 @@ function ConnectedStoresCard() {
       toast.error(message);
     } finally {
       setSyncingId(null);
+    }
+  };
+
+  const handleDelete = async (connectionId: string, storeDomain: string) => {
+    if (!window.confirm(`Disconnect ${storeDomain}? This removes its synced products and can't be undone.`)) return;
+    setDeletingId(connectionId);
+    try {
+      await api.deleteStore(connectionId);
+      toast.success("Store disconnected.");
+      await queryClient.invalidateQueries({ queryKey: ["commerce", "stores"] });
+      await queryClient.invalidateQueries({ queryKey: ["commerce", "products"] });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Couldn't disconnect this store.";
+      toast.error(message);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -180,14 +197,24 @@ function ConnectedStoresCard() {
                         "no capabilities available"}
                     </p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={syncingId === s.connection.id}
-                    onClick={() => handleSync(s.connection.id)}
-                  >
-                    {syncingId === s.connection.id ? "Syncing..." : "Sync products"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={syncingId === s.connection.id}
+                      onClick={() => handleSync(s.connection.id)}
+                    >
+                      {syncingId === s.connection.id ? "Syncing..." : "Sync products"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={deletingId === s.connection.id}
+                      onClick={() => handleDelete(s.connection.id, s.connection.store_domain)}
+                    >
+                      {deletingId === s.connection.id ? "Removing..." : "Delete"}
+                    </Button>
+                  </div>
                 </div>
               </li>
             ))}

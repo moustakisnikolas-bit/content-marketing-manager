@@ -189,6 +189,23 @@ async def list_stores(
     return [await _connection_detail(repo, c) for c in connections]
 
 
+@router.delete("/stores/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def disconnect_store(
+    connection_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+    secrets: SecretsPort = Depends(get_secrets),
+) -> None:
+    repo = CommerceRepository(session)
+    connection = await repo.get_connection_by_id(connection_id)
+    if connection is None or connection.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Store connection not found")
+
+    service = CommerceService(session, secrets=secrets, store_adapter_factory=_adapter_factory)
+    await service.disconnect_store(connection_id, user_id=current_user.id)
+
+
 @router.post("/stores/{connection_id}/sync", response_model=SyncProductsResponse)
 async def sync_products(
     connection_id: uuid.UUID,
