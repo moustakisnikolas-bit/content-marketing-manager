@@ -147,10 +147,17 @@ class MetaGraphAdapter:
             )
 
     async def resolve_capabilities(self, *, access_token: str) -> list[CapabilityResult]:
+        # /me/permissions only works with a user token; by this point
+        # access_token is the Page (or IG) token from resolve_account_token(),
+        # which has no /permissions edge and 400s. /debug_token works for
+        # both token types and reports the same granted scopes.
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            response = await client.get(f"{_GRAPH_API_BASE}/me/permissions", params={"access_token": access_token})
+            response = await client.get(
+                f"{_GRAPH_API_BASE}/debug_token",
+                params={"input_token": access_token, "access_token": f"{self._client_id}|{self._client_secret}"},
+            )
             response.raise_for_status()
-        granted = {p["permission"] for p in response.json().get("data", []) if p.get("status") == "granted"}
+        granted = set(response.json().get("data", {}).get("scopes", []))
 
         if self._platform == "instagram":
             has_publish = {"instagram_basic", "instagram_content_publish"} <= granted
