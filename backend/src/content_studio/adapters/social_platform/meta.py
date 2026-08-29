@@ -24,8 +24,11 @@ _REQUESTED_SCOPES = (
     "pages_show_list",
     "pages_read_engagement",
     "pages_manage_posts",
+    "read_insights",
+    "business_management",
     "instagram_basic",
     "instagram_content_publish",
+    "instagram_manage_insights",
 )
 _TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 _POLL_INTERVAL_SECONDS = 2
