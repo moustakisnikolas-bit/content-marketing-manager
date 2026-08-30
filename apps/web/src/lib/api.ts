@@ -315,7 +315,14 @@ export interface ProductOut {
   price: string | null;
   currency: string | null;
   status: string;
+  categories: string[];
   synced_at: string;
+}
+
+export interface BulkProductCampaignResponse {
+  campaign_id: string;
+  started_count: number;
+  failed_product_ids: string[];
 }
 
 export interface ProductVariantOut {
@@ -645,6 +652,15 @@ export const api = {
     productId: string,
     payload: { goal_slug: string; mode: "manual" | "guided" | "autopilot"; target_platforms: string[] },
   ) => apiClient.post<CampaignProposalOut>(`/commerce/products/${productId}/campaign`, payload),
+
+  bulkGenerateProductCampaign: (payload: {
+    product_ids: string[];
+    description: string;
+    goal_slug: string;
+    target_platforms: string[];
+    campaign_id?: string | null;
+    generate_images?: boolean;
+  }) => apiClient.post<BulkProductCampaignResponse>("/commerce/products/bulk-campaign", payload),
 
   generateAbandonedCartContent: (productId: string, payload: { consent_confirmed: boolean }) =>
     apiClient.post<CampaignProposalOut>(`/commerce/products/${productId}/abandoned-cart-content`, payload),

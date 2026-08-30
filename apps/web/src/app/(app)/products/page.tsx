@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { SelectableList } from "@/components/selectable-list";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -193,26 +194,17 @@ export default function ProductsPage() {
           <CardHeader>
             <CardTitle className="text-base">All products</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1">
-            {!products || products.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No products yet — connect a store and sync from the eCommerce page.
-              </p>
-            ) : (
-              products.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setSelectedId(p.id)}
-                  className={cn(
-                    "block w-full rounded-md px-3 py-2 text-left text-sm transition-colors",
-                    selectedId === p.id ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                  )}
-                >
-                  <p className="font-medium">{p.title}</p>
-                  <p className="text-xs text-muted-foreground">{p.price ? `${p.price} ${p.currency ?? ""}` : "-"}</p>
-                </button>
-              ))
-            )}
+          <CardContent>
+            <SelectableList
+              items={(products ?? []).map((p) => ({
+                id: p.id,
+                primary: p.title,
+                secondary: p.price ? `${p.price} ${p.currency ?? ""}` : "-",
+              }))}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              emptyMessage="No products yet — connect a store and sync from the eCommerce page."
+            />
           </CardContent>
         </Card>
 

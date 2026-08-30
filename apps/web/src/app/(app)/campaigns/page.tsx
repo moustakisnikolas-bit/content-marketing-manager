@@ -7,8 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { SelectableList } from "@/components/selectable-list";
 import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 const PLAN_ITEM_STATUS_LABELS: Record<string, string> = {
   pending: "Not started",
@@ -249,24 +249,13 @@ function CampaignsPageInner() {
           <CardHeader>
             <CardTitle className="text-base">All campaigns</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1">
-            {!campaigns || campaigns.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No campaigns yet.</p>
-            ) : (
-              campaigns.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => setSelectedId(c.id)}
-                  className={cn(
-                    "block w-full rounded-md px-3 py-2 text-left text-sm transition-colors",
-                    selectedId === c.id ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                  )}
-                >
-                  <p className="font-medium">{c.name}</p>
-                  <p className="text-xs text-muted-foreground">{c.status}</p>
-                </button>
-              ))
-            )}
+          <CardContent>
+            <SelectableList
+              items={(campaigns ?? []).map((c) => ({ id: c.id, primary: c.name, secondary: c.status }))}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              emptyMessage="No campaigns yet."
+            />
           </CardContent>
         </Card>
 

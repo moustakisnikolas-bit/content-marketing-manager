@@ -80,6 +80,7 @@ class ProductOut(BaseModel):
     price: Decimal | None
     currency: str | None
     status: str
+    categories: list[str]
     synced_at: datetime
 
     model_config = {"from_attributes": True}
@@ -95,6 +96,21 @@ class GenerateProductCampaignRequest(BaseModel):
     goal_slug: str
     mode: str = Field(pattern="^(manual|guided|autopilot)$")
     target_platforms: list[str] = Field(default_factory=list)
+
+
+class BulkProductCampaignRequest(BaseModel):
+    product_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1, max_length=2000)
+    goal_slug: str
+    target_platforms: list[str] = Field(default_factory=list)
+    campaign_id: uuid.UUID | None = None
+    generate_images: bool = True
+
+
+class BulkProductCampaignResponse(BaseModel):
+    campaign_id: uuid.UUID
+    started_count: int
+    failed_product_ids: list[uuid.UUID]
 
 
 class GenerateAbandonedCartContentRequest(BaseModel):

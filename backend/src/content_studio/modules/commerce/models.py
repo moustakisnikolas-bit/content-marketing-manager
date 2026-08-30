@@ -136,6 +136,7 @@ class Product(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Base):
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     variants: Mapped[list["ProductVariant"]] = relationship(back_populates="product")

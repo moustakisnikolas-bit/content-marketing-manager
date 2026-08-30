@@ -1,8 +1,10 @@
+import asyncio
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from temporalio.client import Client
 
 from content_studio.api.deps import (
     WorkspaceContext,
@@ -10,6 +12,7 @@ from content_studio.api.deps import (
     get_db_session,
     get_secrets,
     get_store_adapter,
+    get_temporal_client_dep,
     get_workspace_context,
 )
 from content_studio.config import get_settings
@@ -21,6 +24,8 @@ from content_studio.modules.commerce.exceptions import (
 from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.schemas import (
     AuthorizationUrlOut,
+    BulkProductCampaignRequest,
+    BulkProductCampaignResponse,
     CampaignProposalOut,
     CapabilityOut,
     ConnectionDetailOut,
@@ -38,7 +43,10 @@ from content_studio.modules.commerce.schemas import (
     WebhookReceivedOut,
 )
 from content_studio.modules.commerce.service import CommerceService
+from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.identity.models import User
+from content_studio.modules.marketing.exceptions import CampaignNotFound
+from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.modules.publishing.exceptions import InvalidOAuthState
 from content_studio.modules.publishing.oauth_state import (
     create_oauth_state,
@@ -48,6 +56,9 @@ from content_studio.modules.publishing.oauth_state import (
 )
 from content_studio.ports.secrets import SecretsPort
 from content_studio.ports.store_connector import StoreConnectorPort, StoreResponseError
+from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
+
+_BULK_WORKFLOW_START_CONCURRENCY = 10
 
 router = APIRouter(prefix="/commerce", tags=["commerce"])
 
@@ -281,6 +292,86 @@ async def generate_product_campaign(
     except ProductNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Product not found") from exc
     return CampaignProposalOut.model_validate(proposal)
+
+
+@router.post("/products/bulk-campaign", response_model=BulkProductCampaignResponse, status_code=status.HTTP_202_ACCEPTED)
+async def bulk_generate_product_campaign(
+    body: BulkProductCampaignRequest,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+    secrets: SecretsPort = Depends(get_secrets),
+    temporal: Client = Depends(get_temporal_client_dep),
+) -> BulkProductCampaignResponse:
+    """Quick Start's product-picker step: one text item (and optionally one
+    image item) per selected product, generation started immediately for
+    each rather than left pending. DB writes (plan items, content items,
+    generation jobs) happen sequentially — a single AsyncSession isn't safe
+    for concurrent use — but the Temporal workflow starts (pure network
+    calls, no session access) run concurrently under a bounded semaphore so
+    a large batch doesn't turn into a slow sequential-HTTP-style stall."""
+    service = CommerceService(session, secrets=secrets, store_adapter_factory=_adapter_factory)
+    try:
+        result = await service.build_bulk_plan_items(
+            organization_id=context.organization_id, workspace_id=context.workspace_id, user_id=current_user.id,
+            product_ids=body.product_ids, description=body.description, goal_slug=body.goal_slug,
+            target_platforms=body.target_platforms, campaign_id=body.campaign_id,
+            generate_images=body.generate_images,
+        )
+    except CampaignNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found") from exc
+
+    creation_repo = CreationRepository(session)
+    marketing_repo = MarketingRepository(session)
+    settings = get_settings()
+
+    # Phase A (sequential, DB only): create one GenerationJob per prepared
+    # item — cheap inserts, no network I/O.
+    jobs = []
+    for prepared_item in result.prepared_items:
+        job = await creation_repo.create_generation_job(
+            organization_id=context.organization_id, workspace_id=context.workspace_id,
+            content_item_id=prepared_item.prepared.content_item_id, recipe_id=prepared_item.prepared.recipe_id,
+            requested_by_user_id=current_user.id, subscription_id=context.subscription_id,
+            brief_text=prepared_item.prepared.brief_text,
+        )
+        jobs.append((job, prepared_item.plan_item))
+    await session.commit()
+
+    # Phase B (concurrent, network only): start every workflow, bounded so
+    # we don't open unbounded concurrent connections to Temporal. Each
+    # start is isolated so one failure doesn't take down the batch.
+    semaphore = asyncio.Semaphore(_BULK_WORKFLOW_START_CONCURRENCY)
+
+    async def _start(job) -> str | None:
+        async with semaphore:
+            workflow_id = f"generation-{job.id}"
+            try:
+                await temporal.start_workflow(
+                    GenerationWorkflow.run, GenerationWorkflowInput(job_id=str(job.id)),
+                    id=workflow_id, task_queue=settings.temporal_task_queue,
+                )
+                return workflow_id
+            except Exception:  # noqa: BLE001 — any Temporal-start failure just marks this one item failed
+                return None
+
+    workflow_ids = await asyncio.gather(*(_start(job) for job, _ in jobs))
+
+    # Phase C (sequential, DB only): link/mark each item by its Phase B result.
+    started_count = 0
+    for (job, plan_item), workflow_id in zip(jobs, workflow_ids, strict=True):
+        if workflow_id is not None:
+            await creation_repo.set_job_workflow_id(job, workflow_id)
+            await marketing_repo.link_plan_item_generation(plan_item, content_item_id=job.content_item_id, generation_job_id=job.id)
+            await marketing_repo.update_plan_item_status(plan_item, "generating")
+            started_count += 1
+        else:
+            await marketing_repo.update_plan_item_status(plan_item, "failed")
+    await session.commit()
+
+    return BulkProductCampaignResponse(
+        campaign_id=result.campaign_id, started_count=started_count, failed_product_ids=result.failed_product_ids
+    )
 
 
 @router.post(

@@ -6,6 +6,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from temporalio.client import Client
 
 from content_studio.adapters.factory import (
     get_policy_adapter,
@@ -28,6 +29,7 @@ from content_studio.ports.secrets import SecretsPort
 from content_studio.ports.social_platform import SocialPlatformPort
 from content_studio.ports.store_connector import StoreConnectorPort
 from content_studio.rate_limit import RateLimiter, get_redis_client
+from content_studio.workflows.client import get_temporal_client
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 WORKSPACE_ID_HEADER = "X-Workspace-Id"
@@ -228,3 +230,7 @@ def rate_limit_by_client_ip(*, action: str, limit: int, window_seconds: int = 60
             )
 
     return _check
+
+
+async def get_temporal_client_dep() -> Client:
+    return await get_temporal_client()

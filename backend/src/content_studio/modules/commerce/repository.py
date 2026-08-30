@@ -153,6 +153,7 @@ class CommerceRepository:
         currency: str | None,
         status: str,
         raw_payload: dict,
+        categories: list[str],
     ) -> Product:
         result = await self._session.execute(
             select(Product).where(
@@ -169,6 +170,7 @@ class CommerceRepository:
             existing.currency = currency
             existing.status = status
             existing.raw_payload = raw_payload
+            existing.categories = categories
             existing.synced_at = now
             await self._session.flush()
             return existing
@@ -176,7 +178,7 @@ class CommerceRepository:
         product = Product(
             organization_id=organization_id, workspace_id=workspace_id, store_connection_id=store_connection_id,
             external_product_id=external_product_id, title=title, description=description, price=price,
-            currency=currency, status=status, raw_payload=raw_payload, synced_at=now,
+            currency=currency, status=status, raw_payload=raw_payload, categories=categories, synced_at=now,
         )
         self._session.add(product)
         await self._session.flush()

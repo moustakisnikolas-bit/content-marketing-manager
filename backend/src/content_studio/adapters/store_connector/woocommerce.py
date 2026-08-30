@@ -228,6 +228,7 @@ class WooCommerceAdapter:
                         status=_STATUS_MAP.get(raw.get("status", ""), "archived"),
                         raw_payload=raw,
                         image_urls=[img["src"] for img in raw.get("images", []) if img.get("src")],
+                        categories=[c["name"] for c in raw.get("categories", []) if c.get("name")],
                         variants=variants,
                     )
                 )

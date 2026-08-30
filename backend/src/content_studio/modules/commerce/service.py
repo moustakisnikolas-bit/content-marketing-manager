@@ -17,8 +17,10 @@ from content_studio.modules.commerce.models import Product, StoreConnection
 from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.webhook_signature import verify_signature
 from content_studio.modules.governance.service import AuditService
-from content_studio.modules.marketing.models import CampaignProposal
-from content_studio.modules.marketing.service import MarketingService
+from content_studio.modules.marketing.exceptions import CampaignNotFound
+from content_studio.modules.marketing.models import Campaign, CampaignPlanItem, CampaignProposal
+from content_studio.modules.marketing.repository import MarketingRepository
+from content_studio.modules.marketing.service import MarketingService, PreparedGeneration
 from content_studio.ports.secrets import SecretsPort
 from content_studio.ports.store_connector import StoreConnectorPort
 
@@ -29,6 +31,19 @@ ABANDONED_CART_GOAL_SLUG = "retargeting"
 class SyncResult:
     products_synced: int
     next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class BulkPlanItemPrepared:
+    plan_item: CampaignPlanItem
+    prepared: PreparedGeneration
+
+
+@dataclass(frozen=True)
+class BulkCampaignResult:
+    campaign_id: uuid.UUID
+    prepared_items: list[BulkPlanItemPrepared]
+    failed_product_ids: list[uuid.UUID]
 
 
 @dataclass(frozen=True)
@@ -217,6 +232,7 @@ class CommerceService:
                 currency=product_data.currency,
                 status=product_data.status,
                 raw_payload=product_data.raw_payload,
+                categories=product_data.categories,
             )
             for variant in product_data.variants:
                 await self._repo.upsert_variant(
@@ -340,6 +356,103 @@ class CommerceService:
         )
         await self._session.commit()
         return proposal
+
+    async def build_bulk_plan_items(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        user_id: uuid.UUID,
+        product_ids: list[uuid.UUID],
+        description: str,
+        goal_slug: str,
+        target_platforms: list[str],
+        campaign_id: uuid.UUID | None,
+        generate_images: bool,
+    ) -> BulkCampaignResult:
+        """The DB-writing half of the Quick Start bulk product flow — one
+        text item (and optionally one image item) per product, all sharing
+        `description` as their prompt (image items use it verbatim; text
+        items prefix it with the product's own title, same construction as
+        generate_product_campaign_brief()). Does NOT start Temporal
+        workflows — same split as prepare_item_generation(), since starting
+        N workflows concurrently needs to happen outside any single
+        AsyncSession-bound call, at the API layer."""
+        marketing_service = MarketingService(self._session)
+        marketing_repo = MarketingRepository(self._session)
+
+        campaign: Campaign
+        if campaign_id is None:
+            # Cheap and deterministic (no LLM call) — only needed to satisfy
+            # Campaign.proposal_id's NOT NULL/UNIQUE constraint, not to
+            # preview anything: at N=50 products there's nothing meaningful
+            # to show as a single combined "proposal" anyway.
+            brief = await marketing_service.create_brief(
+                organization_id=organization_id, workspace_id=workspace_id, user_id=user_id, goal_slug=goal_slug,
+                what_to_promote=description, mode="guided", target_platforms=target_platforms,
+            )
+            proposal = await marketing_service.generate_proposal(brief.id)
+            campaign = await marketing_repo.create_campaign(
+                organization_id=organization_id, workspace_id=workspace_id, proposal_id=proposal.id,
+                approved_by_user_id=user_id, name=description.strip()[:60] or "Bulk product campaign",
+            )
+        else:
+            existing_campaign = await marketing_repo.get_campaign_by_id(campaign_id)
+            if existing_campaign is None or existing_campaign.workspace_id != workspace_id:
+                raise CampaignNotFound(str(campaign_id))
+            campaign = existing_campaign
+
+        sequence_number = len(await marketing_repo.list_plan_items_for_campaign(campaign.id))
+        target_platform = target_platforms[0] if target_platforms else None
+
+        prepared_items: list[BulkPlanItemPrepared] = []
+        failed_product_ids: list[uuid.UUID] = []
+        for product_id in product_ids:
+            product = await self._repo.get_product_by_id(product_id)
+            if product is None or product.workspace_id != workspace_id:
+                failed_product_ids.append(product_id)
+                continue
+
+            sequence_number += 1
+            text_item = await marketing_repo.create_plan_item(
+                campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
+                brief_text=f"{product.title} - {description}".strip(" -"), target_platform=target_platform,
+                product_id=product.id, content_type="text",
+            )
+            prepared_items.append(
+                BulkPlanItemPrepared(plan_item=text_item, prepared=await marketing_service.prepare_item_generation(text_item))
+            )
+
+            if generate_images:
+                sequence_number += 1
+                image_item = await marketing_repo.create_plan_item(
+                    campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
+                    brief_text=description, target_platform=target_platform,
+                    product_id=product.id, content_type="image",
+                )
+                prepared_items.append(
+                    BulkPlanItemPrepared(plan_item=image_item, prepared=await marketing_service.prepare_item_generation(image_item))
+                )
+
+        await self._audit.record(
+            event_type="commerce.bulk_product_campaign_prepared",
+            actor_type="user",
+            actor_id=str(user_id),
+            organization_id=organization_id,
+            summary=(
+                f"Prepared {len(prepared_items)} item(s) across "
+                f"{len(product_ids) - len(failed_product_ids)} product(s)"
+            ),
+            payload={
+                "campaign_id": str(campaign.id),
+                "product_count": len(product_ids),
+                "failed_count": len(failed_product_ids),
+            },
+        )
+        await self._session.commit()
+        return BulkCampaignResult(
+            campaign_id=campaign.id, prepared_items=prepared_items, failed_product_ids=failed_product_ids
+        )
 
     async def generate_abandoned_cart_content(
         self,

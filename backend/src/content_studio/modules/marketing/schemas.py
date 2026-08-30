@@ -57,6 +57,8 @@ class CampaignPlanItemOut(BaseModel):
     status: str
     content_item_id: uuid.UUID | None
     publication_plan_id: uuid.UUID | None
+    product_id: uuid.UUID | None
+    content_type: str
 
     model_config = {"from_attributes": True}
 

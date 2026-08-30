@@ -13,6 +13,7 @@ from content_studio.modules.commerce.service import CommerceService
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.identity.service import IdentityService
+from content_studio.modules.marketing.exceptions import CampaignNotFound
 from content_studio.modules.marketing.repository import MarketingRepository
 from tests.fakes.secrets import FakeSecrets
 from tests.fakes.store_connector import FakeStoreConnector
@@ -395,3 +396,119 @@ async def test_abandoned_cart_content_generated_with_consent(db_session: AsyncSe
     )
 
     assert product.title in proposal.objective
+
+
+async def _seed_two_products(db_session: AsyncSession, ctx: dict) -> tuple:
+    from content_studio.ports.store_connector import ProductData, ProductPage
+
+    secrets = FakeSecrets()
+    pages = [
+        ProductPage(
+            products=[
+                ProductData(
+                    external_product_id="p1", title="Candle A", description="d1", price="10.00", currency="USD",
+                    status="active", raw_payload={}, categories=["Candles"],
+                ),
+                ProductData(
+                    external_product_id="p2", title="Candle B", description="d2", price="20.00", currency="USD",
+                    status="active", raw_payload={}, categories=["Candles", "Bestsellers"],
+                ),
+            ],
+            next_cursor=None,
+        ),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="woocommerce", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+    # build_bulk_plan_items() creates a real image plan item — needs an
+    # active "image" recipe, same as _seed_workspace() seeds for "text".
+    creation_repo = CreationRepository(db_session)
+    await creation_repo.create_recipe(
+        name=f"image-recipe-{uuid.uuid4().hex[:8]}", content_type="image", provider="replicate", model="test-model",
+        estimated_cost=Decimal("2.0"),
+    )
+    await db_session.commit()
+
+    repo = CommerceRepository(db_session)
+    products = sorted(await repo.list_products_for_connection(connection.id), key=lambda p: p.title)
+    return service, products
+
+
+async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[p.id for p in products], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=["facebook"], campaign_id=None, generate_images=True,
+    )
+
+    assert result.failed_product_ids == []
+    assert len(result.prepared_items) == 4  # 2 products x (text + image)
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    assert [i.sequence_number for i in items] == [1, 2, 3, 4]
+    assert {i.content_type for i in items} == {"text", "image"}
+    assert {i.product_id for i in items} == {p.id for p in products}
+
+    text_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "text")
+    assert text_item.brief_text == "Candle A - 20% off this week"
+    image_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "image")
+    assert image_item.brief_text == "20% off this week"
+
+
+async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    first = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id], description="launch week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=False,
+    )
+    assert len(first.prepared_items) == 1  # text only
+
+    second = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[1].id], description="still launch week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=first.campaign_id, generate_images=False,
+    )
+
+    assert second.campaign_id == first.campaign_id
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(first.campaign_id)
+    assert [i.sequence_number for i in items] == [1, 2]
+    assert all(i.content_type == "text" for i in items)
+
+
+async def test_bulk_plan_items_collects_failed_product_ids(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    missing_id = uuid.uuid4()
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id, missing_id], description="promo", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=False,
+    )
+
+    assert result.failed_product_ids == [missing_id]
+    assert len(result.prepared_items) == 1
+
+
+async def test_bulk_plan_items_raises_for_unknown_campaign(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    with pytest.raises(CampaignNotFound):
+        await service.build_bulk_plan_items(
+            organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+            product_ids=[products[0].id], description="promo", goal_slug=ctx["goal_slug"],
+            target_platforms=[], campaign_id=uuid.uuid4(), generate_images=False,
+        )

@@ -144,15 +144,15 @@ class MarketingService:
         lives at the API/activity layer, not here)."""
         campaign = await self._repo.get_campaign_by_id(plan_item.campaign_id)
         assert campaign is not None
-        recipe = await self._creation_repo.get_active_recipe_for_content_type("text")
+        recipe = await self._creation_repo.get_active_recipe_for_content_type(plan_item.content_type)
         if recipe is None:
-            raise NoActiveRecipe("text")
+            raise NoActiveRecipe(plan_item.content_type)
 
         content_item = await self._creation_repo.create_content_item(
             organization_id=campaign.organization_id,
             workspace_id=campaign.workspace_id,
             created_by_user_id=campaign.approved_by_user_id,
-            content_type="text",
+            content_type=plan_item.content_type,
             title=plan_item.title,
         )
         await self._session.commit()

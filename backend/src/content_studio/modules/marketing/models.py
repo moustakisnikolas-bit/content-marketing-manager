@@ -176,6 +176,13 @@ class CampaignPlanItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     publication_plan_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("publication_plans.id", ondelete="SET NULL"), nullable=True
     )
+    # Set when this item was generated for a specific catalog product (the
+    # bulk product-campaign path) — null for items from the single "what
+    # are you promoting" text flow, which isn't tied to any one product.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
+    )
+    content_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
     campaign: Mapped["Campaign"] = relationship(back_populates="plan_items")

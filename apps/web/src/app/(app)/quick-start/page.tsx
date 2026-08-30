@@ -2,29 +2,28 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ProposalSummary } from "@/components/proposal-summary";
+import { ProductPicker } from "@/components/product-picker";
+import { SelectableList } from "@/components/selectable-list";
 import { WooCommerceConnectForm } from "@/components/woocommerce-connect-form";
-import { api, type CampaignProposalOut, type Platform } from "@/lib/api";
+import { api, type Platform } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 import { POST_OAUTH_REDIRECT_KEY } from "@/lib/oauth-redirect";
 import { cn } from "@/lib/utils";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 
 interface WizardState {
   connectedPlatforms: Platform[];
   connectedStore: boolean;
+  campaignId: string | null;
   goalSlug: string;
   whatToPromote: string;
-  mode: "guided" | "autopilot";
+  selectedProductIds: string[];
 }
-
-const AUTOPILOT_MAX_SPEND_CEILING = 20;
-const AUTOPILOT_BALANCE_FRACTION = 0.5;
 
 // ---------- Step 1: Connect ----------
 
@@ -112,7 +111,57 @@ function ConnectStep({ onContinue }: { onContinue: () => void }) {
   );
 }
 
-// ---------- Step 2: What are you promoting ----------
+// ---------- Step 2: Campaign ----------
+
+function CampaignStep({
+  wizard,
+  setWizard,
+  onContinue,
+}: {
+  wizard: WizardState;
+  setWizard: (update: Partial<WizardState>) => void;
+  onContinue: () => void;
+}) {
+  const { data: campaigns } = useQuery({ queryKey: ["marketing", "campaigns"], queryFn: api.listCampaigns });
+  const activeCampaigns = (campaigns ?? []).filter((c) => c.status !== "completed" && c.status !== "cancelled");
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add to a campaign</CardTitle>
+        <CardDescription>Pick an existing campaign to add to, or start a new one.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <button
+          type="button"
+          onClick={() => setWizard({ campaignId: null })}
+          className={cn(
+            "block w-full rounded-md border p-3 text-left text-sm transition-colors",
+            wizard.campaignId === null ? "border-primary bg-primary/10" : "border-border hover:bg-muted",
+          )}
+        >
+          <p className="font-medium">Start a new campaign</p>
+        </button>
+
+        {activeCampaigns.length > 0 && (
+          <div>
+            <p className="mb-2 text-sm font-medium">Or add to an existing campaign</p>
+            <SelectableList
+              items={activeCampaigns.map((c) => ({ id: c.id, primary: c.name, secondary: c.status }))}
+              selectedId={wizard.campaignId}
+              onSelect={(id) => setWizard({ campaignId: id })}
+              emptyMessage="No active campaigns."
+            />
+          </div>
+        )}
+
+        <Button onClick={onContinue}>Continue</Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------- Step 3: What are you promoting ----------
 
 function PromoteStep({
   wizard,
@@ -129,13 +178,16 @@ function PromoteStep({
     <Card>
       <CardHeader>
         <CardTitle>What are you promoting?</CardTitle>
-        <CardDescription>In your own words — we&apos;ll turn this into a real plan.</CardDescription>
+        <CardDescription>
+          In your own words — this becomes the shared prompt for every product you pick next, both for the
+          writing and the generated image.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <textarea
           rows={3}
           className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
-          placeholder="Our new summer candle collection, 20% off this week"
+          placeholder="20% off this week, bright summer photography"
           value={wizard.whatToPromote}
           onChange={(e) => setWizard({ whatToPromote: e.target.value })}
         />
@@ -168,9 +220,9 @@ function PromoteStep({
   );
 }
 
-// ---------- Step 3: How involved ----------
+// ---------- Step 4: Products ----------
 
-function InvolvementStep({
+function ProductsStep({
   wizard,
   setWizard,
   onContinue,
@@ -179,163 +231,89 @@ function InvolvementStep({
   setWizard: (update: Partial<WizardState>) => void;
   onContinue: () => void;
 }) {
-  const canAutopilot = wizard.connectedPlatforms.length > 0;
+  const { data: products } = useQuery({ queryKey: ["commerce", "products"], queryFn: api.listProducts });
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>How involved do you want to be?</CardTitle>
+        <CardTitle>Which products?</CardTitle>
+        <CardDescription>We&apos;ll generate one post (and a matching image) for each product you pick.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setWizard({ mode: "guided" })}
-            className={cn(
-              "rounded-md border p-4 text-left text-sm transition-colors",
-              wizard.mode === "guided" ? "border-primary bg-primary/10" : "border-border",
-            )}
-          >
-            <p className="font-medium">I want to approve every post</p>
-            <p className="mt-1 text-xs text-muted-foreground">We&apos;ll create content and wait for your OK.</p>
-          </button>
-          <button
-            type="button"
-            disabled={!canAutopilot}
-            onClick={() => canAutopilot && setWizard({ mode: "autopilot" })}
-            className={cn(
-              "rounded-md border p-4 text-left text-sm transition-colors",
-              !canAutopilot && "cursor-not-allowed opacity-50",
-              wizard.mode === "autopilot" ? "border-primary bg-primary/10" : "border-border",
-            )}
-          >
-            <p className="font-medium">Just handle it for me</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {canAutopilot
-                ? "We'll create and publish automatically, within safe limits."
-                : "Connect an account in step 1 to use this."}
-            </p>
-          </button>
-        </div>
-
-        <Button onClick={onContinue}>Continue</Button>
+        {!products || products.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No products yet — connect a store and sync from the eCommerce page.
+          </p>
+        ) : (
+          <ProductPicker
+            products={products}
+            selectedIds={wizard.selectedProductIds}
+            onChange={(ids) => setWizard({ selectedProductIds: ids })}
+          />
+        )}
+        <Button onClick={onContinue} disabled={wizard.selectedProductIds.length === 0}>
+          Continue
+        </Button>
       </CardContent>
     </Card>
   );
 }
 
-// ---------- Step 4: Review & Launch ----------
+// ---------- Step 5: Review & Launch ----------
 
 function ReviewLaunchStep({ wizard }: { wizard: WizardState }) {
   const router = useRouter();
-  const [proposal, setProposal] = useState<{ brief_id: string; proposal: CampaignProposalOut } | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const { data: products } = useQuery({ queryKey: ["commerce", "products"], queryFn: api.listProducts });
 
-  const { data: balance } = useQuery({ queryKey: ["billing", "subscription"], queryFn: api.getSubscriptionBalance });
-
-  const buildProposal = async () => {
-    setLoadError(null);
-    try {
-      const response = await api.createMarketingBrief({
-        goal_slug: wizard.goalSlug,
-        what_to_promote: wizard.whatToPromote,
-        mode: wizard.mode,
-        target_platforms: wizard.connectedPlatforms,
-      });
-      setProposal(response);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "Couldn't generate a proposal.");
-    }
-  };
-
-  // Intentionally mount-only: wizard is finalized by steps 1-3 before this
-  // component mounts, and the started-ref guard (not the dep array) is what
-  // actually prevents re-runs.
-  const started = useRef(false);
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    void buildProposal();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  if (loadError) {
-    return (
-      <Card>
-        <CardContent className="space-y-3 py-6">
-          <p className="text-sm text-destructive">{loadError}</p>
-          <Button onClick={buildProposal}>Try again</Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!proposal) {
-    return (
-      <Card>
-        <CardContent className="py-6">
-          <p className="text-sm text-muted-foreground">Building your plan...</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const estimatedCost = Number(proposal.proposal.estimated_cost);
-  const creditBalance = balance ? Number(balance.credit_balance) : null;
-  const overBudget = creditBalance !== null && estimatedCost > creditBalance;
-  const campaignName = wizard.whatToPromote.trim().slice(0, 40) + (wizard.whatToPromote.trim().length > 40 ? "…" : "");
+  const selectedProducts = (products ?? []).filter((p) => wizard.selectedProductIds.includes(p.id));
 
   const handleLaunch = async () => {
     setLaunching(true);
-    let campaignId: string;
     try {
-      const result = await api.approveProposal(proposal.proposal.id, { campaign_name: campaignName });
-      campaignId = result.campaign_id;
+      const result = await api.bulkGenerateProductCampaign({
+        product_ids: wizard.selectedProductIds,
+        description: wizard.whatToPromote,
+        goal_slug: wizard.goalSlug,
+        target_platforms: wizard.connectedPlatforms,
+        campaign_id: wizard.campaignId,
+        generate_images: true,
+      });
+      if (result.failed_product_ids.length > 0) {
+        toast.error(`${result.failed_product_ids.length} product(s) couldn't be included.`);
+      }
+      toast.success(`Started ${result.started_count} item(s) — they'll appear on the campaign page as they finish.`);
+      router.push(`/campaigns?campaign=${result.campaign_id}`);
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Couldn't create this campaign.";
+      const message = err instanceof ApiError ? err.message : "Couldn't launch this campaign.";
       toast.error(message);
       setLaunching(false);
-      return;
     }
-
-    if (wizard.mode === "autopilot") {
-      try {
-        const maxSpend = Math.min(
-          (creditBalance ?? 0) * AUTOPILOT_BALANCE_FRACTION,
-          AUTOPILOT_MAX_SPEND_CEILING,
-        ).toFixed(2);
-        await api.createAutoPilotPolicy(campaignId, {
-          allowed_platforms: wizard.connectedPlatforms,
-          max_total_spend: maxSpend,
-          blocked_topics: [],
-          posting_window_start_hour: 9,
-          posting_window_end_hour: 21,
-        });
-        await api.startAutoPilot(campaignId);
-        toast.success("Your campaign is running on Auto-Pilot!");
-      } catch {
-        toast.success("Campaign created — couldn't set up Auto-Pilot automatically, you can turn it on from this page.");
-        router.push(`/campaigns?campaign=${campaignId}`);
-        return;
-      }
-    } else {
-      toast.success("Your campaign is live!");
-    }
-    router.push(`/campaigns?campaign=${campaignId}`);
   };
 
   return (
     <Card className="border-primary/30">
-      <ProposalSummary proposal={proposal.proposal} />
+      <CardHeader>
+        <CardTitle>Review &amp; launch</CardTitle>
+        <CardDescription>
+          {wizard.campaignId ? "Adding these to your existing campaign." : "Starting a new campaign."}
+        </CardDescription>
+      </CardHeader>
       <CardContent className="space-y-4">
-        {overBudget && (
-          <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-            This costs more credits than you have available — add credits or make your request smaller.
-          </p>
-        )}
-        <Button onClick={handleLaunch} disabled={launching || overBudget}>
-          {launching ? "Launching..." : "Launch my campaign!"}
+        <div>
+          <p className="text-sm font-medium">What you&apos;re promoting</p>
+          <p className="mt-1 text-sm text-muted-foreground">{wizard.whatToPromote}</p>
+        </div>
+        <div>
+          <p className="text-sm font-medium">{selectedProducts.length} product(s)</p>
+          <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto text-sm text-muted-foreground">
+            {selectedProducts.map((p) => (
+              <li key={p.id}>{p.title}</li>
+            ))}
+          </ul>
+        </div>
+        <Button onClick={handleLaunch} disabled={launching}>
+          {launching ? "Launching..." : "Launch"}
         </Button>
       </CardContent>
     </Card>
@@ -349,9 +327,10 @@ export default function QuickStartPage() {
   const [wizard, setWizardState] = useState<WizardState>({
     connectedPlatforms: [],
     connectedStore: false,
+    campaignId: null,
     goalSlug: "brand_awareness",
     whatToPromote: "",
-    mode: "guided",
+    selectedProductIds: [],
   });
   const { data: connections } = useQuery({ queryKey: ["publishing", "connections"], queryFn: api.listConnections });
   const { data: stores } = useQuery({ queryKey: ["commerce", "stores"], queryFn: api.listStores });
@@ -375,13 +354,14 @@ export default function QuickStartPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Quick Start</h1>
-        <p className="text-muted-foreground">Step {step} of 4</p>
+        <p className="text-muted-foreground">Step {step} of 5</p>
       </div>
 
       {step === 1 && <ConnectStep onContinue={goToStep2} />}
-      {step === 2 && <PromoteStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(3)} />}
-      {step === 3 && <InvolvementStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(4)} />}
-      {step === 4 && <ReviewLaunchStep wizard={wizard} />}
+      {step === 2 && <CampaignStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(3)} />}
+      {step === 3 && <PromoteStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(4)} />}
+      {step === 4 && <ProductsStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(5)} />}
+      {step === 5 && <ReviewLaunchStep wizard={wizard} />}
     </div>
   );
 }

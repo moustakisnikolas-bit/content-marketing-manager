@@ -153,6 +153,8 @@ class MarketingRepository:
         brief_text: str,
         target_platform: str | None = None,
         platform_connection_id: uuid.UUID | None = None,
+        product_id: uuid.UUID | None = None,
+        content_type: str = "text",
     ) -> CampaignPlanItem:
         item = CampaignPlanItem(
             campaign_id=campaign_id,
@@ -161,6 +163,8 @@ class MarketingRepository:
             brief_text=brief_text,
             target_platform=target_platform,
             platform_connection_id=platform_connection_id,
+            product_id=product_id,
+            content_type=content_type,
         )
         self._session.add(item)
         await self._session.flush()

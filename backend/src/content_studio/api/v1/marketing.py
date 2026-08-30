@@ -9,6 +9,7 @@ from content_studio.api.deps import (
     WorkspaceContext,
     get_current_user,
     get_db_session,
+    get_temporal_client_dep,
     get_workspace_context,
 )
 from content_studio.config import get_settings
@@ -32,14 +33,9 @@ from content_studio.modules.marketing.schemas import (
 )
 from content_studio.modules.marketing.service import MarketingService
 from content_studio.workflows.autopilot import AutoPilotCampaignWorkflow, AutoPilotWorkflowInput
-from content_studio.workflows.client import get_temporal_client
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
-
-
-async def get_temporal_client_dep() -> Client:
-    return await get_temporal_client()
 
 
 @router.get("/goals", response_model=list[MarketingGoalOut])

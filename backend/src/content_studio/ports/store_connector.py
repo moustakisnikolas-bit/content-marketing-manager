@@ -51,6 +51,7 @@ class ProductData:
     status: str
     raw_payload: dict
     image_urls: list[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
     variants: list[VariantData] = field(default_factory=list)
 
 
