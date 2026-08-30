@@ -27,13 +27,15 @@ class BrandKitService:
         user_id: uuid.UUID,
         name: str,
         tone_description: str | None,
+        product_line_description: str | None,
         vocabulary: list[str],
         colors: list[str],
         target_audiences: list[str],
         default_ctas: list[str],
     ) -> BrandProfile:
         profile = await self._repo.create_brand_profile(
-            workspace_id=workspace_id, name=name, tone_description=tone_description, vocabulary=vocabulary,
+            workspace_id=workspace_id, name=name, tone_description=tone_description,
+            product_line_description=product_line_description, vocabulary=vocabulary,
             colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
         )
         await self._audit.record(
@@ -54,6 +56,7 @@ class BrandKitService:
         workspace_id: uuid.UUID,
         name: str,
         tone_description: str | None,
+        product_line_description: str | None,
         vocabulary: list[str],
         colors: list[str],
         target_audiences: list[str],
@@ -62,8 +65,9 @@ class BrandKitService:
     ) -> BrandProfile:
         profile = await self._get_workspace_profile(profile_id, workspace_id)
         await self._repo.update_brand_profile(
-            profile, name=name, tone_description=tone_description, vocabulary=vocabulary, colors=colors,
-            target_audiences=target_audiences, default_ctas=default_ctas, is_active=is_active,
+            profile, name=name, tone_description=tone_description, product_line_description=product_line_description,
+            vocabulary=vocabulary, colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
+            is_active=is_active,
         )
         await self._session.commit()
         return profile

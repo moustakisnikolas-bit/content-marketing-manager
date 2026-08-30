@@ -172,25 +172,89 @@ function PromoteStep({
   setWizard: (update: Partial<WizardState>) => void;
   onContinue: () => void;
 }) {
+  const queryClient = useQueryClient();
   const { data: goals } = useQuery({ queryKey: ["marketing", "goals"], queryFn: api.listMarketingGoals });
+  const { data: profiles } = useQuery({ queryKey: ["brand-profiles"], queryFn: api.listBrandProfiles });
+  const activeProfile = profiles?.find((p) => p.is_active) ?? profiles?.[0] ?? null;
+
+  const [productLine, setProductLine] = useState("");
+  const [productLineLoaded, setProductLineLoaded] = useState(false);
+  const [savingProductLine, setSavingProductLine] = useState(false);
+
+  // Adjusting state during render (not in an effect) — the recommended
+  // React pattern for "seed local state from a query once it loads,
+  // without clobbering the user's typing on refetch."
+  if (profiles && !productLineLoaded) {
+    setProductLine(activeProfile?.product_line_description ?? "");
+    setProductLineLoaded(true);
+  }
+
+  const handleContinue = async () => {
+    const trimmed = productLine.trim();
+    if (trimmed !== (activeProfile?.product_line_description ?? "")) {
+      setSavingProductLine(true);
+      try {
+        if (activeProfile) {
+          await api.updateBrandProfile(activeProfile.id, {
+            name: activeProfile.name,
+            tone_description: activeProfile.tone_description,
+            product_line_description: trimmed || null,
+            vocabulary: activeProfile.vocabulary,
+            colors: activeProfile.colors,
+            target_audiences: activeProfile.target_audiences,
+            default_ctas: activeProfile.default_ctas,
+            is_active: activeProfile.is_active,
+          });
+        } else if (trimmed) {
+          await api.createBrandProfile({
+            name: "Default",
+            tone_description: null,
+            product_line_description: trimmed,
+            vocabulary: [],
+            colors: [],
+            target_audiences: [],
+            default_ctas: [],
+          });
+        }
+        await queryClient.invalidateQueries({ queryKey: ["brand-profiles"] });
+      } catch {
+        toast.error("Couldn't save what you sell, but continuing anyway.");
+      } finally {
+        setSavingProductLine(false);
+      }
+    }
+    onContinue();
+  };
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>What are you promoting?</CardTitle>
-        <CardDescription>
-          In your own words — this becomes the shared prompt for every product you pick next, both for the
-          writing and the generated image.
-        </CardDescription>
+        <CardDescription>Tell us about your products once, then what makes this batch special.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <textarea
-          rows={3}
-          className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
-          placeholder="20% off this week, bright summer photography"
-          value={wizard.whatToPromote}
-          onChange={(e) => setWizard({ whatToPromote: e.target.value })}
-        />
+        <div className="space-y-1">
+          <p className="text-sm font-medium">What do you sell?</p>
+          <textarea
+            rows={2}
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+            placeholder="Soy scented candles, room diffusers, car diffusers, plant-based wax melts"
+            value={productLine}
+            onChange={(e) => setProductLine(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">Saved once — reused for every future campaign.</p>
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-sm font-medium">What&apos;s special about this batch?</p>
+          <textarea
+            rows={2}
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+            placeholder="20% off this week, bright summer photography"
+            value={wizard.whatToPromote}
+            onChange={(e) => setWizard({ whatToPromote: e.target.value })}
+          />
+        </div>
 
         <div>
           <p className="mb-2 text-sm font-medium">What&apos;s the goal?</p>
@@ -212,8 +276,8 @@ function PromoteStep({
           </div>
         </div>
 
-        <Button onClick={onContinue} disabled={!wizard.whatToPromote.trim()}>
-          Continue
+        <Button onClick={handleContinue} disabled={!wizard.whatToPromote.trim() || savingProductLine}>
+          {savingProductLine ? "Saving..." : "Continue"}
         </Button>
       </CardContent>
     </Card>

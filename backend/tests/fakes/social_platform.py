@@ -5,6 +5,7 @@ from content_studio.ports.social_platform import (
     ConnectableAccount,
     OAuthToken,
     PublishResult,
+    RecentPost,
 )
 
 
@@ -21,6 +22,7 @@ class FakeSocialPlatform:
         post_status: str = "published",
         post_metrics: dict | None = None,
         accounts: list[ConnectableAccount] | None = None,
+        recent_posts: list[RecentPost] | None = None,
     ) -> None:
         self.capabilities = capabilities or [
             CapabilityResult(capability="direct_publish_text", is_available=True),
@@ -38,6 +40,7 @@ class FakeSocialPlatform:
         self.accounts = accounts or [
             ConnectableAccount(external_account_id=f"fake-account-{uuid.uuid4().hex[:8]}", external_account_name="Fake Account")
         ]
+        self.recent_posts = recent_posts or []
         self.published_calls: list[dict] = []
 
     def get_authorization_url(self, *, state: str) -> str:
@@ -95,3 +98,8 @@ class FakeSocialPlatform:
 
     async def get_post_metrics(self, *, access_token: str, external_post_id: str) -> dict:
         return self.post_metrics
+
+    async def list_recent_posts(
+        self, *, access_token: str, external_account_id: str, limit: int = 5
+    ) -> list[RecentPost]:
+        return self.recent_posts[:limit]

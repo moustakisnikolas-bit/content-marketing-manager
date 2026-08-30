@@ -159,6 +159,7 @@ class BrandProfileOut(BaseModel):
     id: uuid.UUID
     name: str
     tone_description: str | None
+    product_line_description: str | None
     vocabulary: list[str]
     colors: list[str]
     target_audiences: list[str]
@@ -176,6 +177,7 @@ class BrandProfileDetailOut(BaseModel):
 class CreateBrandProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     tone_description: str | None = Field(default=None, max_length=2000)
+    product_line_description: str | None = Field(default=None, max_length=2000)
     vocabulary: list[str] = Field(default_factory=list)
     colors: list[str] = Field(default_factory=list)
     target_audiences: list[str] = Field(default_factory=list)

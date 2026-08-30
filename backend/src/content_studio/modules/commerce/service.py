@@ -7,6 +7,7 @@ from decimal import Decimal
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from content_studio.adapters.factory import get_social_platform_adapter
 from content_studio.config import get_settings
 from content_studio.modules.commerce.exceptions import (
     ConsentRequired,
@@ -17,10 +18,12 @@ from content_studio.modules.commerce.models import Product, StoreConnection
 from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.webhook_signature import verify_signature
 from content_studio.modules.governance.service import AuditService
+from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.marketing.exceptions import CampaignNotFound
 from content_studio.modules.marketing.models import Campaign, CampaignPlanItem, CampaignProposal
 from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.modules.marketing.service import MarketingService, PreparedGeneration
+from content_studio.modules.publishing.repository import PublishingRepository
 from content_studio.ports.secrets import SecretsPort
 from content_studio.ports.store_connector import StoreConnectorPort
 
@@ -371,15 +374,21 @@ class CommerceService:
         generate_images: bool,
     ) -> BulkCampaignResult:
         """The DB-writing half of the Quick Start bulk product flow — one
-        text item (and optionally one image item) per product, all sharing
-        `description` as their prompt (image items use it verbatim; text
-        items prefix it with the product's own title, same construction as
-        generate_product_campaign_brief()). Does NOT start Temporal
-        workflows — same split as prepare_item_generation(), since starting
-        N workflows concurrently needs to happen outside any single
-        AsyncSession-bound call, at the API layer."""
+        text item (and optionally one image item) per product. Text briefs
+        combine the product's own title, the workspace's persistent brand
+        context (BrandProfile.product_line_description), this batch's
+        shared `description`, and a style reference sampled once from the
+        workspace's own recently-published Meta posts (best-effort — a
+        missing connection or API failure just means no style reference,
+        never blocks generation). Does NOT start Temporal workflows — same
+        split as prepare_item_generation(), since starting N workflows
+        concurrently needs to happen outside any single AsyncSession-bound
+        call, at the API layer."""
         marketing_service = MarketingService(self._session)
         marketing_repo = MarketingRepository(self._session)
+
+        product_line_description = await self._get_product_line_description(workspace_id)
+        recent_captions = await self._get_recent_post_captions(workspace_id)
 
         campaign: Campaign
         if campaign_id is None:
@@ -414,9 +423,13 @@ class CommerceService:
                 continue
 
             sequence_number += 1
+            text_brief = _build_text_brief(
+                product_title=product.title, product_line_description=product_line_description,
+                campaign_description=description, recent_captions=recent_captions,
+            )
             text_item = await marketing_repo.create_plan_item(
                 campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
-                brief_text=f"{product.title} - {description}".strip(" -"), target_platform=target_platform,
+                brief_text=text_brief, target_platform=target_platform,
                 product_id=product.id, content_type="text",
             )
             prepared_items.append(
@@ -425,9 +438,10 @@ class CommerceService:
 
             if generate_images:
                 sequence_number += 1
+                image_brief = _build_image_brief(product_title=product.title, campaign_description=description)
                 image_item = await marketing_repo.create_plan_item(
                     campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
-                    brief_text=description, target_platform=target_platform,
+                    brief_text=image_brief, target_platform=target_platform,
                     product_id=product.id, content_type="image",
                 )
                 prepared_items.append(
@@ -502,8 +516,48 @@ class CommerceService:
             raise ProductNotFound(str(product_id))
         return product
 
+    async def _get_product_line_description(self, workspace_id: uuid.UUID) -> str | None:
+        profiles = await IdentityRepository(self._session).list_brand_profiles_for_workspace(workspace_id)
+        active = next((p for p in profiles if p.is_active), profiles[0] if profiles else None)
+        return active.product_line_description if active else None
+
+    async def _get_recent_post_captions(self, workspace_id: uuid.UUID, *, limit: int = 5) -> list[str]:
+        # Best-effort style reference — no connection, an unreachable Meta
+        # API, or a token that's since been revoked should just mean "no
+        # style reference," never block content generation.
+        try:
+            connections = await PublishingRepository(self._session).list_connections_for_workspace(workspace_id)
+            connection = next((c for c in connections if c.platform in ("facebook", "instagram")), None)
+            if connection is None:
+                return []
+            adapter = get_social_platform_adapter(get_settings(), connection.platform)
+            access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
+            posts = await adapter.list_recent_posts(
+                access_token=access_token, external_account_id=connection.external_account_id, limit=limit
+            )
+            return [p.caption for p in posts if p.caption]
+        except Exception:  # noqa: BLE001 — any failure here degrades to "no style reference"
+            return []
+
 
 def _to_decimal(value: str | None) -> Decimal | None:
     if value is None:
         return None
     return Decimal(value)
+
+
+def _build_text_brief(
+    *, product_title: str, product_line_description: str | None, campaign_description: str, recent_captions: list[str]
+) -> str:
+    lines = [f"Write a social media caption for: {product_title}."]
+    if product_line_description:
+        lines.append(f"About our business: {product_line_description}")
+    lines.append(f"This post should focus on: {campaign_description}")
+    if recent_captions:
+        lines.append("Match the tone and style of these recent posts we've published:")
+        lines.extend(f"- {caption}" for caption in recent_captions[:3])
+    return "\n".join(lines)
+
+
+def _build_image_brief(*, product_title: str, campaign_description: str) -> str:
+    return f"{product_title}. {campaign_description}"

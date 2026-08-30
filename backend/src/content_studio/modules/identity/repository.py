@@ -244,13 +244,15 @@ class IdentityRepository:
         workspace_id: uuid.UUID,
         name: str,
         tone_description: str | None,
+        product_line_description: str | None,
         vocabulary: list[str],
         colors: list[str],
         target_audiences: list[str],
         default_ctas: list[str],
     ) -> BrandProfile:
         profile = BrandProfile(
-            workspace_id=workspace_id, name=name, tone_description=tone_description, vocabulary=vocabulary,
+            workspace_id=workspace_id, name=name, tone_description=tone_description,
+            product_line_description=product_line_description, vocabulary=vocabulary,
             colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
         )
         self._session.add(profile)
@@ -272,6 +274,7 @@ class IdentityRepository:
         *,
         name: str,
         tone_description: str | None,
+        product_line_description: str | None,
         vocabulary: list[str],
         colors: list[str],
         target_audiences: list[str],
@@ -280,6 +283,7 @@ class IdentityRepository:
     ) -> None:
         profile.name = name
         profile.tone_description = tone_description
+        profile.product_line_description = product_line_description
         profile.vocabulary = vocabulary
         profile.colors = colors
         profile.target_audiences = target_audiences

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
@@ -9,6 +10,7 @@ from content_studio.ports.social_platform import (
     ConnectableAccount,
     OAuthToken,
     PublishResult,
+    RecentPost,
 )
 
 _GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
@@ -290,3 +292,38 @@ class MetaGraphAdapter:
             "shares": 0,
             "link_clicks": values.get("post_clicks", 0),
         }
+
+    async def list_recent_posts(
+        self, *, access_token: str, external_account_id: str, limit: int = 5
+    ) -> list[RecentPost]:
+        # Reads the account's own already-published content — same
+        # pages_read_engagement/instagram_basic scopes already granted for
+        # publishing/metrics cover this, no extra permission needed.
+        # Best-effort like get_post_metrics(): a non-200 or malformed
+        # timestamp never raises, since this is only ever a style hint.
+        if self._platform == "instagram":
+            edge, fields, caption_field, time_field = "media", "id,caption,timestamp", "caption", "timestamp"
+        else:
+            edge, fields, caption_field, time_field = "posts", "id,message,created_time", "message", "created_time"
+
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.get(
+                f"{_GRAPH_API_BASE}/{external_account_id}/{edge}",
+                params={"fields": fields, "limit": limit, "access_token": access_token},
+            )
+            if response.status_code != 200:
+                return []
+
+        posts: list[RecentPost] = []
+        for row in response.json().get("data", []):
+            posted_at: datetime | None = None
+            raw_time = row.get(time_field)
+            if raw_time:
+                try:
+                    posted_at = datetime.fromisoformat(raw_time)
+                except ValueError:
+                    posted_at = None
+            posts.append(
+                RecentPost(external_post_id=row["id"], caption=row.get(caption_field), posted_at=posted_at)
+            )
+        return posts

@@ -1,11 +1,19 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from content_studio.ports.social_platform import (
     CapabilityResult,
     ConnectableAccount,
     OAuthToken,
     PublishResult,
+    RecentPost,
 )
+
+_STUB_RECENT_CAPTIONS = [
+    "New arrivals just dropped — link in bio!",
+    "Behind the scenes making this week's batch.",
+    "Customer favorite, back in stock today.",
+]
 
 # Realistic-but-simulated capability differences per platform, so the
 # capability-resolution architecture (never hardcoded in application code,
@@ -128,3 +136,16 @@ class StubSocialPlatformAdapter:
             "shares": shares,
             "link_clicks": clicks,
         }
+
+    async def list_recent_posts(
+        self, *, access_token: str, external_account_id: str, limit: int = 5
+    ) -> list[RecentPost]:
+        now = datetime.now(UTC)
+        return [
+            RecentPost(
+                external_post_id=f"stub-post-{uuid.uuid5(uuid.NAMESPACE_URL, f'{external_account_id}:{i}').hex[:12]}",
+                caption=_STUB_RECENT_CAPTIONS[i % len(_STUB_RECENT_CAPTIONS)],
+                posted_at=now - timedelta(days=i * 3),
+            )
+            for i in range(min(limit, len(_STUB_RECENT_CAPTIONS)))
+        ]

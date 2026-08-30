@@ -28,16 +28,20 @@ async def test_create_and_update_brand_profile(db_session: AsyncSession) -> None
 
     profile = await service.create_profile(
         organization_id=result.organization.id, workspace_id=result.workspace.id, user_id=result.user.id,
-        name="Main voice", tone_description="Friendly and upbeat", vocabulary=["delightful"], colors=["#1a73e8"],
+        name="Main voice", tone_description="Friendly and upbeat", product_line_description="Candles",
+        vocabulary=["delightful"], colors=["#1a73e8"],
         target_audiences=["young professionals"], default_ctas=["Shop now"],
     )
     assert profile.name == "Main voice"
     assert profile.is_active is True
+    assert profile.product_line_description == "Candles"
 
     updated = await service.update_profile(
         profile.id, workspace_id=result.workspace.id, name="Updated voice", tone_description="Calmer now",
+        product_line_description="Candles and diffusers",
         vocabulary=[], colors=[], target_audiences=[], default_ctas=[], is_active=False,
     )
+    assert updated.product_line_description == "Candles and diffusers"
     assert updated.name == "Updated voice"
     assert updated.is_active is False
 
@@ -49,12 +53,14 @@ async def test_update_profile_from_another_workspace_raises_not_found(db_session
 
     profile = await service.create_profile(
         organization_id=owner.organization.id, workspace_id=owner.workspace.id, user_id=owner.user.id,
-        name="Owner's voice", tone_description=None, vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
+        name="Owner's voice", tone_description=None, product_line_description=None, vocabulary=[], colors=[],
+        target_audiences=[], default_ctas=[],
     )
 
     with pytest.raises(BrandProfileNotFound):
         await service.update_profile(
-            profile.id, workspace_id=other.workspace.id, name="Hijacked", tone_description=None, vocabulary=[],
+            profile.id, workspace_id=other.workspace.id, name="Hijacked", tone_description=None,
+            product_line_description=None, vocabulary=[],
             colors=[], target_audiences=[], default_ctas=[], is_active=True,
         )
 
@@ -64,7 +70,8 @@ async def test_add_and_remove_brand_rule(db_session: AsyncSession) -> None:
     service = BrandKitService(db_session)
     profile = await service.create_profile(
         organization_id=result.organization.id, workspace_id=result.workspace.id, user_id=result.user.id,
-        name="Main voice", tone_description=None, vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
+        name="Main voice", tone_description=None, product_line_description=None, vocabulary=[], colors=[],
+        target_audiences=[], default_ctas=[],
     )
 
     rule = await service.add_rule(
@@ -85,7 +92,8 @@ async def test_add_rule_to_profile_in_another_workspace_raises_not_found(db_sess
     service = BrandKitService(db_session)
     profile = await service.create_profile(
         organization_id=owner.organization.id, workspace_id=owner.workspace.id, user_id=owner.user.id,
-        name="Owner's voice", tone_description=None, vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
+        name="Owner's voice", tone_description=None, product_line_description=None, vocabulary=[], colors=[],
+        target_audiences=[], default_ctas=[],
     )
 
     with pytest.raises(BrandProfileNotFound):
@@ -106,7 +114,8 @@ async def test_brand_rule_enforcement_still_works_via_the_new_crud_path(db_sessi
     service = BrandKitService(db_session)
     profile = await service.create_profile(
         organization_id=result.organization.id, workspace_id=result.workspace.id, user_id=result.user.id,
-        name="Main voice", tone_description=None, vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
+        name="Main voice", tone_description=None, product_line_description=None, vocabulary=[], colors=[],
+        target_audiences=[], default_ctas=[],
     )
     await service.add_rule(
         profile.id, workspace_id=result.workspace.id, rule_type="forbidden_claim",

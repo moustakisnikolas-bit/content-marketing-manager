@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 
@@ -27,6 +28,13 @@ class PublishResult:
 class ConnectableAccount:
     external_account_id: str
     external_account_name: str
+
+
+@dataclass(frozen=True)
+class RecentPost:
+    external_post_id: str
+    caption: str | None
+    posted_at: datetime | None
 
 
 class SocialPlatformPort(Protocol):
@@ -104,4 +112,14 @@ class SocialPlatformPort(Protocol):
         shape are provider-specific, per 11_ANALYTICS_AND_OPTIMIZATION.md's
         dual-storage rule. Normalization onto MetricDefinition happens in
         the analytics module, not here."""
+        ...
+
+    async def list_recent_posts(
+        self, *, access_token: str, external_account_id: str, limit: int = 5
+    ) -> list[RecentPost]:
+        """Already-published posts/media for this account, most recent
+        first — used as a style/tone reference for new generation, not for
+        publishing or metrics. Best-effort: implementations should return
+        an empty list rather than raise on any provider-side failure, since
+        callers treat this purely as an optional quality boost."""
         ...

@@ -150,6 +150,11 @@ class BrandProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     tone_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the workspace actually sells, e.g. "soy scented candles, room
+    # diffusers, car diffusers, plant-based wax melts" — persistent context
+    # fed into every product's generation prompt, entered once instead of
+    # retyped per campaign.
+    product_line_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     vocabulary: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     colors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     target_audiences: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

@@ -12,9 +12,11 @@ from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.service import CommerceService
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
+from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.identity.service import IdentityService
 from content_studio.modules.marketing.exceptions import CampaignNotFound
 from content_studio.modules.marketing.repository import MarketingRepository
+from content_studio.modules.publishing.repository import PublishingRepository
 from tests.fakes.secrets import FakeSecrets
 from tests.fakes.store_connector import FakeStoreConnector
 
@@ -458,9 +460,10 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     assert {i.product_id for i in items} == {p.id for p in products}
 
     text_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "text")
-    assert text_item.brief_text == "Candle A - 20% off this week"
+    assert "Candle A" in text_item.brief_text
+    assert "20% off this week" in text_item.brief_text
     image_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "image")
-    assert image_item.brief_text == "20% off this week"
+    assert image_item.brief_text == "Candle A. 20% off this week"
 
 
 async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
@@ -512,3 +515,47 @@ async def test_bulk_plan_items_raises_for_unknown_campaign(db_session: AsyncSess
             product_ids=[products[0].id], description="promo", goal_slug=ctx["goal_slug"],
             target_platforms=[], campaign_id=uuid.uuid4(), generate_images=False,
         )
+
+
+async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    identity_repo = IdentityRepository(db_session)
+    await identity_repo.create_brand_profile(
+        workspace_id=ctx["workspace_id"], name="Default", tone_description=None,
+        product_line_description="Soy scented candles, room diffusers, car diffusers, plant-based wax melts",
+        vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
+    )
+
+    publishing_repo = PublishingRepository(db_session)
+    # Seal through the same FakeSecrets instance build_bulk_plan_items()
+    # will later unseal from (service._secrets, set by _seed_two_products()).
+    token_ref = await service._secrets.seal(value="fake-page-token")
+    await publishing_repo.create_connection(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        connected_by_user_id=ctx["user_id"], platform="facebook", external_account_id="fake-page-1",
+        external_account_name="Fake Page", access_token_secret_ref=token_ref, refresh_token_secret_ref=None,
+        scopes=[],
+    )
+    await db_session.commit()
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "Soy scented candles" in text_item.brief_text
+    assert "20% off this week" in text_item.brief_text
+    # StubSocialPlatformAdapter.list_recent_posts() is what get_social_platform_adapter()
+    # falls back to with no real Meta app configured (the case in tests) — its
+    # canned captions prove the whole lookup->unseal->adapter->extract chain works.
+    assert "New arrivals just dropped" in text_item.brief_text
+    assert products[0].title in image_item.brief_text
+    assert "20% off this week" in image_item.brief_text

@@ -437,6 +437,7 @@ export interface BrandProfileOut {
   id: string;
   name: string;
   tone_description: string | null;
+  product_line_description: string | null;
   vocabulary: string[];
   colors: string[];
   target_audiences: string[];
@@ -726,6 +727,7 @@ export const api = {
   createBrandProfile: (payload: {
     name: string;
     tone_description?: string | null;
+    product_line_description?: string | null;
     vocabulary: string[];
     colors: string[];
     target_audiences: string[];
@@ -737,6 +739,7 @@ export const api = {
     payload: {
       name: string;
       tone_description?: string | null;
+      product_line_description?: string | null;
       vocabulary: string[];
       colors: string[];
       target_audiences: string[];

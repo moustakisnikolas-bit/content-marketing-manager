@@ -21,6 +21,7 @@ function CreateProfileCard() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [tone, setTone] = useState("");
+  const [productLine, setProductLine] = useState("");
   const [vocabulary, setVocabulary] = useState("");
   const [colors, setColors] = useState("");
   const [audiences, setAudiences] = useState("");
@@ -35,6 +36,7 @@ function CreateProfileCard() {
       await api.createBrandProfile({
         name: name.trim(),
         tone_description: tone.trim() || null,
+        product_line_description: productLine.trim() || null,
         vocabulary: splitList(vocabulary),
         colors: splitList(colors),
         target_audiences: splitList(audiences),
@@ -43,6 +45,7 @@ function CreateProfileCard() {
       toast.success(`Created brand profile '${name.trim()}'`);
       setName("");
       setTone("");
+      setProductLine("");
       setVocabulary("");
       setColors("");
       setAudiences("");
@@ -83,6 +86,17 @@ function CreateProfileCard() {
               value={tone}
               onChange={(e) => setTone(e.target.value)}
               placeholder="Friendly, upbeat, never pushy"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="product_line">What do you sell?</Label>
+            <textarea
+              id="product_line"
+              rows={2}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+              value={productLine}
+              onChange={(e) => setProductLine(e.target.value)}
+              placeholder="Soy scented candles, room diffusers, car diffusers, plant-based wax melts"
             />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
