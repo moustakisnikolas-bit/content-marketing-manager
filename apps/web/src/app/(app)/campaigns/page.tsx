@@ -7,8 +7,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { RevisionPreview } from "@/components/revision-preview";
 import { SelectableList } from "@/components/selectable-list";
-import { api } from "@/lib/api";
+import { api, type CampaignPlanItemOut } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const PLAN_ITEM_STATUS_LABELS: Record<string, string> = {
   pending: "Not started",
@@ -149,9 +151,102 @@ function AutoPilotSection({ campaignId }: { campaignId: string }) {
   );
 }
 
+function PlanItemReviewPanel({
+  campaignId,
+  item,
+  hasPrevious,
+  hasNext,
+  onNavigate,
+  onDecided,
+  onClose,
+}: {
+  campaignId: string;
+  item: CampaignPlanItemOut;
+  hasPrevious: boolean;
+  hasNext: boolean;
+  onNavigate: (direction: "previous" | "next") => void;
+  onDecided: () => void;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+
+  const { data: detail } = useQuery({
+    queryKey: ["content", "items", item.content_item_id],
+    queryFn: () => api.getContentItem(item.content_item_id!),
+    enabled: !!item.content_item_id,
+  });
+  const latestRevision = detail?.revisions.at(-1);
+
+  const handleReview = async (decision: "approved" | "rejected") => {
+    if (!latestRevision || !item.generation_job_id) return;
+    setBusy(true);
+    try {
+      await api.reviewGenerationJob(item.generation_job_id, { decision, revision_id: latestRevision.id });
+      toast.success(decision === "approved" ? "Approved" : "Rejected");
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+      onDecided();
+    } catch {
+      toast.error("Couldn't submit review.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="border-primary/30">
+      <CardHeader>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">{item.title}</CardTitle>
+            <CardDescription>
+              {item.content_type} {item.target_platform && `· ${item.target_platform}`}
+            </CardDescription>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {detail && latestRevision ? (
+          <RevisionPreview revision={latestRevision} contentType={item.content_type} />
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading preview...</p>
+        )}
+
+        <div className="flex items-center justify-between pt-2">
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" disabled={!hasPrevious} onClick={() => onNavigate("previous")}>
+              ← Previous
+            </Button>
+            <Button variant="ghost" size="sm" disabled={!hasNext} onClick={() => onNavigate("next")}>
+              Next →
+            </Button>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={busy || !latestRevision} onClick={() => handleReview("approved")}>
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || !latestRevision}
+              onClick={() => handleReview("rejected")}
+            >
+              Reject
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function CampaignDetail({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient();
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -174,6 +269,26 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
 
   if (!detail) return null;
 
+  const reviewableItems = detail.plan_items.filter((i) => i.status === "awaiting_review");
+  const reviewingIndex = reviewableItems.findIndex((i) => i.id === reviewingId);
+  const reviewingItem = reviewingIndex >= 0 ? reviewableItems[reviewingIndex] : null;
+
+  const handleNavigate = (direction: "previous" | "next") => {
+    const nextIndex = reviewingIndex + (direction === "next" ? 1 : -1);
+    if (nextIndex >= 0 && nextIndex < reviewableItems.length) {
+      setReviewingId(reviewableItems[nextIndex].id);
+    }
+  };
+
+  const handleDecided = () => {
+    // Picks the next item from the list as it stood *before* this decision
+    // — the item just decided will drop out of reviewableItems once the
+    // campaign query refetches, so index-chasing after that would skip one.
+    const nextIndex = reviewingIndex + 1 < reviewableItems.length ? reviewingIndex + 1 : reviewingIndex - 1;
+    const next = nextIndex >= 0 && nextIndex < reviewableItems.length ? reviewableItems[nextIndex] : null;
+    setReviewingId(next && next.id !== reviewingId ? next.id : null);
+  };
+
   return (
     <div className="space-y-6">
       <Card>
@@ -185,25 +300,56 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
         </CardHeader>
         <CardContent>
           <ul className="space-y-2">
-            {detail.plan_items.map((item) => (
-              <li key={item.id} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
-                <div>
-                  <p className="font-medium">{item.title}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {PLAN_ITEM_STATUS_LABELS[item.status] ?? item.status}
-                    {item.target_platform && ` · ${item.target_platform}`}
-                  </p>
-                </div>
-                {item.status === "pending" && (
-                  <Button size="sm" disabled={startingItemId === item.id} onClick={() => handleStartItem(item.id)}>
-                    Start
-                  </Button>
-                )}
-              </li>
-            ))}
+            {detail.plan_items.map((item) => {
+              const reviewable = item.status === "awaiting_review";
+              return (
+                <li
+                  key={item.id}
+                  onClick={() => reviewable && setReviewingId(item.id)}
+                  className={cn(
+                    "flex items-center justify-between rounded-md border p-3 text-sm transition-colors",
+                    reviewable ? "cursor-pointer hover:bg-muted" : "border-border",
+                    reviewingId === item.id ? "border-primary bg-primary/10" : "border-border",
+                  )}
+                >
+                  <div>
+                    <p className="font-medium">{item.title}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {PLAN_ITEM_STATUS_LABELS[item.status] ?? item.status}
+                      {item.target_platform && ` · ${item.target_platform}`}
+                    </p>
+                  </div>
+                  {item.status === "pending" && (
+                    <Button
+                      size="sm"
+                      disabled={startingItemId === item.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleStartItem(item.id);
+                      }}
+                    >
+                      Start
+                    </Button>
+                  )}
+                  {reviewable && <span className="text-xs font-medium text-primary">Review →</span>}
+                </li>
+              );
+            })}
           </ul>
         </CardContent>
       </Card>
+
+      {reviewingItem && (
+        <PlanItemReviewPanel
+          campaignId={campaignId}
+          item={reviewingItem}
+          hasPrevious={reviewingIndex > 0}
+          hasNext={reviewingIndex < reviewableItems.length - 1}
+          onNavigate={handleNavigate}
+          onDecided={handleDecided}
+          onClose={() => setReviewingId(null)}
+        />
+      )}
 
       <AutoPilotSection campaignId={campaignId} />
 

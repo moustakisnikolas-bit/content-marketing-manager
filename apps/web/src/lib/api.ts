@@ -197,6 +197,9 @@ export interface CampaignPlanItemOut {
   status: string;
   content_item_id: string | null;
   publication_plan_id: string | null;
+  generation_job_id: string | null;
+  product_id: string | null;
+  content_type: string;
 }
 
 export interface CampaignDecisionOut {

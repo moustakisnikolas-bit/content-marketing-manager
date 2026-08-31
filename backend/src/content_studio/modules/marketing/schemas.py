@@ -57,6 +57,7 @@ class CampaignPlanItemOut(BaseModel):
     status: str
     content_item_id: uuid.UUID | None
     publication_plan_id: uuid.UUID | None
+    generation_job_id: uuid.UUID | None
     product_id: uuid.UUID | None
     content_type: str
 
