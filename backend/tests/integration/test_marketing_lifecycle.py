@@ -233,6 +233,59 @@ async def test_run_item_end_to_end_publishes_when_guardrails_pass(db_session: As
     assert any(d.decision_type == "autopilot_proceed" for d in decisions)
 
 
+async def test_effective_plan_item_status_reads_through_stale_generating_items(db_session: AsyncSession) -> None:
+    """Regression test for the Guided/bulk dispatch path: campaign_plan_items.status
+    is written once ("generating") at dispatch time and never updated again outside
+    Auto-Pilot's own code path, so a "generating" item can be done already. This
+    proves get_effective_plan_item_statuses() reads through to the real
+    GenerationJob state instead of trusting the stale stored value."""
+    ctx = await _seed_workspace(db_session)
+    service = MarketingService(db_session)
+    marketing_repo = MarketingRepository(db_session)
+    creation_repo = CreationRepository(db_session)
+
+    brief = await service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        goal_slug=ctx["goal_slug"], what_to_promote="status sync test", mode="guided", target_platforms=["facebook"],
+    )
+    proposal = await service.generate_proposal(brief.id)
+    campaign = await service.approve_proposal(proposal_id=proposal.id, user_id=ctx["user_id"], campaign_name="Status Sync")
+    plan_item = (await marketing_repo.list_plan_items_for_campaign(campaign.id))[0]
+
+    # Mirrors what start_plan_item()/the bulk endpoint actually do: prepare
+    # the ContentItem, create a GenerationJob, link it, mark "generating".
+    prepared = await service.prepare_item_generation(plan_item)
+    job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        content_item_id=prepared.content_item_id, recipe_id=prepared.recipe_id,
+        requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"], brief_text=prepared.brief_text,
+    )
+    await marketing_repo.link_plan_item_generation(plan_item, content_item_id=prepared.content_item_id, generation_job_id=job.id)
+    await marketing_repo.update_plan_item_status(plan_item, "generating")
+    await db_session.commit()
+
+    # Still actually generating — no override, stays "generating".
+    statuses = await service.get_effective_plan_item_statuses([plan_item])
+    assert statuses[plan_item.id] == "generating"
+
+    # The job finishes generating and clears quality gate — exactly what's
+    # missing from /campaigns today: the plan item never hears about it.
+    await creation_repo.update_job_status(job, "awaiting_review")
+    await db_session.commit()
+    statuses = await service.get_effective_plan_item_statuses([plan_item])
+    assert statuses[plan_item.id] == "awaiting_review"
+    # And the stored value itself is untouched — this is a read-time
+    # projection, not a write, deliberately safe against in-flight
+    # Temporal workflow executions.
+    assert (await marketing_repo.get_plan_item_by_id(plan_item.id)).status == "generating"
+
+    # A hard failure maps to "failed".
+    await creation_repo.update_job_status(job, "failed", failure_reason="provider error")
+    await db_session.commit()
+    statuses = await service.get_effective_plan_item_statuses([plan_item])
+    assert statuses[plan_item.id] == "failed"
+
+
 async def test_run_item_skips_and_records_decision_when_denied(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     setup = await _seed_campaign_with_policy(db_session, ctx)

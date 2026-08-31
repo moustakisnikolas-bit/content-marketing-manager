@@ -165,6 +165,12 @@ class CreationRepository:
     async def get_generation_job_by_id(self, job_id: uuid.UUID) -> GenerationJob | None:
         return await self._session.get(GenerationJob, job_id)
 
+    async def get_generation_jobs_by_ids(self, job_ids: list[uuid.UUID]) -> list[GenerationJob]:
+        if not job_ids:
+            return []
+        result = await self._session.execute(select(GenerationJob).where(GenerationJob.id.in_(job_ids)))
+        return list(result.scalars().all())
+
     async def list_generation_jobs_for_workspace(self, workspace_id: uuid.UUID) -> list[GenerationJob]:
         result = await self._session.execute(
             select(GenerationJob)

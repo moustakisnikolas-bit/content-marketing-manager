@@ -28,6 +28,19 @@ class PreparedGeneration:
     brief_text: str
 
 
+# GenerationJob.status -> the CampaignPlanItem-level status it implies,
+# for get_effective_plan_item_statuses(). "generating"/"pending"/"approved"
+# job statuses aren't mapped here — no PLAN_ITEM_STATUSES value cleanly
+# fits "approved but not yet published," and "generating"/"pending" imply
+# no change from what's already stored.
+_JOB_STATUS_TO_EFFECTIVE_PLAN_ITEM_STATUS = {
+    "awaiting_review": "awaiting_review",
+    "quality_gate_failed": "failed",
+    "rejected": "failed",
+    "failed": "failed",
+}
+
+
 class MarketingService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -157,3 +170,24 @@ class MarketingService:
         )
         await self._session.commit()
         return PreparedGeneration(content_item_id=content_item.id, recipe_id=recipe.id, brief_text=plan_item.brief_text)
+
+    async def get_effective_plan_item_statuses(self, items: list[CampaignPlanItem]) -> dict[uuid.UUID, str]:
+        """Maps each item's *effective* status, reading through to its
+        linked GenerationJob for items still stored as "generating" —
+        that's written once at dispatch time and never updated again by
+        the Guided/bulk dispatch path; only Auto-Pilot's own code path
+        (autopilot_service.py) keeps it in sync as work progresses. So a
+        "generating" item can genuinely be done already. Returns
+        {item_id: status} for every item, including unchanged ones, so
+        callers don't need to special-case "was it overridden." """
+        stale_job_ids = [i.generation_job_id for i in items if i.status == "generating" and i.generation_job_id]
+        jobs_by_id = {}
+        if stale_job_ids:
+            jobs = await self._creation_repo.get_generation_jobs_by_ids(stale_job_ids)
+            jobs_by_id = {j.id: j for j in jobs}
+
+        result: dict[uuid.UUID, str] = {}
+        for item in items:
+            job = jobs_by_id.get(item.generation_job_id) if item.status == "generating" else None
+            result[item.id] = _JOB_STATUS_TO_EFFECTIVE_PLAN_ITEM_STATUS.get(job.status, item.status) if job else item.status
+        return result

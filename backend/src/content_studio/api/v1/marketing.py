@@ -131,9 +131,21 @@ async def get_campaign(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
     items = await repo.list_plan_items_for_campaign(campaign_id)
     decisions = await repo.list_decisions_for_campaign(campaign_id)
+
+    # Reads through to each "generating" item's real GenerationJob state —
+    # that stored status is written once at dispatch and never updated
+    # again outside Auto-Pilot's own path, so it can be stale. See
+    # MarketingService.get_effective_plan_item_statuses().
+    effective_statuses = await MarketingService(session).get_effective_plan_item_statuses(items)
+    plan_items_out = []
+    for item in items:
+        item_out = CampaignPlanItemOut.model_validate(item)
+        item_out.status = effective_statuses[item.id]
+        plan_items_out.append(item_out)
+
     return CampaignDetailOut(
         campaign=CampaignOut.model_validate(campaign),
-        plan_items=[CampaignPlanItemOut.model_validate(i) for i in items],
+        plan_items=plan_items_out,
         decisions=[CampaignDecisionOut.model_validate(d) for d in decisions],
     )
 
