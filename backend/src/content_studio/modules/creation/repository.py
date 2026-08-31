@@ -148,6 +148,7 @@ class CreationRepository:
         requested_by_user_id: uuid.UUID,
         subscription_id: uuid.UUID,
         brief_text: str,
+        reference_image_url: str | None = None,
     ) -> GenerationJob:
         job = GenerationJob(
             organization_id=organization_id,
@@ -157,6 +158,7 @@ class CreationRepository:
             requested_by_user_id=requested_by_user_id,
             subscription_id=subscription_id,
             brief_text=brief_text,
+            reference_image_url=reference_image_url,
         )
         self._session.add(job)
         await self._session.flush()

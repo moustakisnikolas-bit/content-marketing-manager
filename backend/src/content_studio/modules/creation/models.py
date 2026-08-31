@@ -161,6 +161,10 @@ class GenerationJob(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Base
         UUID(as_uuid=True), ForeignKey("cost_reservations.id", ondelete="SET NULL"), nullable=True
     )
     brief_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Set only for image jobs generated from a real product photo (the
+    # bulk product-campaign flow) — lets the image model edit the actual
+    # photo instead of generating one from text alone. Null everywhere else.
+    reference_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     temporal_workflow_id: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

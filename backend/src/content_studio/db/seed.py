@@ -113,7 +113,7 @@ async def ensure_default_content_recipes(session: AsyncSession) -> None:
             content_type="image",
             provider="replicate",
             model=settings.ai_image_default_model,
-            estimated_cost=Decimal("2.00"),
+            estimated_cost=Decimal("0.08"),
             params={},
         )
 

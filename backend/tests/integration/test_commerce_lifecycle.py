@@ -410,6 +410,7 @@ async def _seed_two_products(db_session: AsyncSession, ctx: dict) -> tuple:
                 ProductData(
                     external_product_id="p1", title="Candle A", description="d1", price="10.00", currency="USD",
                     status="active", raw_payload={}, categories=["Candles"],
+                    image_urls=["https://example.com/candle-a.jpg"],
                 ),
                 ProductData(
                     external_product_id="p2", title="Candle B", description="d2", price="20.00", currency="USD",
@@ -462,8 +463,18 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     text_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "text")
     assert "Candle A" in text_item.brief_text
     assert "20% off this week" in text_item.brief_text
-    image_item = next(i for i in items if i.product_id == products[0].id and i.content_type == "image")
-    assert image_item.brief_text == "Candle A. 20% off this week"
+
+    # Candle A has a synced photo (see _seed_two_products) — its image item
+    # should get an edit-style prompt and carry the reference URL forward,
+    # not re-describe the product from scratch.
+    with_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[0].id and p.plan_item.content_type == "image")
+    assert with_reference.prepared.reference_image_url == "https://example.com/candle-a.jpg"
+    assert with_reference.plan_item.brief_text == "Keep the product exactly as shown. Restyle the scene for: 20% off this week"
+
+    # Candle B has no synced photo — falls back to today's text-to-image behavior.
+    without_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[1].id and p.plan_item.content_type == "image")
+    assert without_reference.prepared.reference_image_url is None
+    assert without_reference.plan_item.brief_text == "Candle B. 20% off this week"
 
 
 async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
@@ -557,5 +568,6 @@ async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(
     # falls back to with no real Meta app configured (the case in tests) — its
     # canned captions prove the whole lookup->unseal->adapter->extract chain works.
     assert "New arrivals just dropped" in text_item.brief_text
-    assert products[0].title in image_item.brief_text
+    # Candle A has a synced photo — image brief is the edit-style prompt, not a re-description.
     assert "20% off this week" in image_item.brief_text
+    assert image_item.brief_text == "Keep the product exactly as shown. Restyle the scene for: 20% off this week"

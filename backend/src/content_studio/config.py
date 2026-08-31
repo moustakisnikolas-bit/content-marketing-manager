@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     ai_text_output_language: str = "Greek"
 
     replicate_api_token: str = ""
-    ai_image_default_model: str = "black-forest-labs/flux-schnell"
+    ai_image_default_model: str = "black-forest-labs/flux-kontext-pro"
     # Kokoro-82M (Apache-2.0, commercial-safe) — the TTS model this
     # project's own OSS stack plan recommended; hosted via Replicate for
     # Phase-2-style zero-GPU-ops generation, same pattern as ai_image.

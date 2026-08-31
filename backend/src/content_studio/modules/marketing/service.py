@@ -26,6 +26,7 @@ class PreparedGeneration:
     content_item_id: uuid.UUID
     recipe_id: uuid.UUID
     brief_text: str
+    reference_image_url: str | None = None
 
 
 # GenerationJob.status -> the CampaignPlanItem-level status it implies,
@@ -151,7 +152,9 @@ class MarketingService:
         await self._session.commit()
         return campaign
 
-    async def prepare_item_generation(self, plan_item: CampaignPlanItem) -> PreparedGeneration:
+    async def prepare_item_generation(
+        self, plan_item: CampaignPlanItem, *, reference_image_url: str | None = None
+    ) -> PreparedGeneration:
         """Creates the Phase 2 ContentItem for this plan item (but not the
         GenerationJob/workflow — that needs the Temporal client, which
         lives at the API/activity layer, not here)."""
@@ -169,7 +172,10 @@ class MarketingService:
             title=plan_item.title,
         )
         await self._session.commit()
-        return PreparedGeneration(content_item_id=content_item.id, recipe_id=recipe.id, brief_text=plan_item.brief_text)
+        return PreparedGeneration(
+            content_item_id=content_item.id, recipe_id=recipe.id, brief_text=plan_item.brief_text,
+            reference_image_url=reference_image_url,
+        )
 
     async def get_effective_plan_item_statuses(self, items: list[CampaignPlanItem]) -> dict[uuid.UUID, str]:
         """Maps each item's *effective* status, reading through to its

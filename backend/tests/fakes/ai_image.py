@@ -14,8 +14,12 @@ class FakeAIImage:
         self.should_fail = should_fail
         self.calls: list[dict] = []
 
-    async def generate_image(self, *, prompt: str, model: str, params: dict) -> bytes:
-        self.calls.append({"prompt": prompt, "model": model, "params": params})
+    async def generate_image(
+        self, *, prompt: str, model: str, params: dict, reference_image_url: str | None = None
+    ) -> bytes:
+        self.calls.append(
+            {"prompt": prompt, "model": model, "params": params, "reference_image_url": reference_image_url}
+        )
         if self.should_fail:
             raise RuntimeError("simulated provider failure")
         return base64.b64decode(_TINY_PNG_B64)

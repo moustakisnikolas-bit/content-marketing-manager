@@ -132,7 +132,8 @@ class GenerationService:
 
         if item.content_type == "image":
             image_bytes = await self._ai_image.generate_image(
-                prompt=job.brief_text, model=recipe.model, params=recipe.params
+                prompt=job.brief_text, model=recipe.model, params=recipe.params,
+                reference_image_url=job.reference_image_url,
             )
             storage_key = f"generated/{job.organization_id}/{uuid.uuid4()}.png"
             await self._object_storage.put_object(key=storage_key, data=image_bytes, content_type="image/png")

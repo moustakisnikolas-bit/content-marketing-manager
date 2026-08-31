@@ -417,7 +417,11 @@ class CommerceService:
         prepared_items: list[BulkPlanItemPrepared] = []
         failed_product_ids: list[uuid.UUID] = []
         for product_id in product_ids:
-            product = await self._repo.get_product_by_id(product_id)
+            # get_product_with_details_by_id (not get_product_by_id) — its
+            # eager-loaded .assets is what makes the primary-photo lookup
+            # below safe; a lazy relationship access raises MissingGreenlet
+            # under the async engine.
+            product = await self._repo.get_product_with_details_by_id(product_id)
             if product is None or product.workspace_id != workspace_id:
                 failed_product_ids.append(product_id)
                 continue
@@ -438,14 +442,25 @@ class CommerceService:
 
             if generate_images:
                 sequence_number += 1
-                image_brief = _build_image_brief(product_title=product.title, campaign_description=description)
+                reference_image_url = (
+                    min(product.assets, key=lambda a: a.position).url if product.assets else None
+                )
+                image_brief = _build_image_edit_prompt(
+                    product_title=product.title, campaign_description=description,
+                    has_reference_image=reference_image_url is not None,
+                )
                 image_item = await marketing_repo.create_plan_item(
                     campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
                     brief_text=image_brief, target_platform=target_platform,
                     product_id=product.id, content_type="image",
                 )
                 prepared_items.append(
-                    BulkPlanItemPrepared(plan_item=image_item, prepared=await marketing_service.prepare_item_generation(image_item))
+                    BulkPlanItemPrepared(
+                        plan_item=image_item,
+                        prepared=await marketing_service.prepare_item_generation(
+                            image_item, reference_image_url=reference_image_url,
+                        ),
+                    )
                 )
 
         await self._audit.record(
@@ -559,5 +574,11 @@ def _build_text_brief(
     return "\n".join(lines)
 
 
-def _build_image_brief(*, product_title: str, campaign_description: str) -> str:
+def _build_image_edit_prompt(*, product_title: str, campaign_description: str, has_reference_image: bool) -> str:
+    if has_reference_image:
+        # The model already sees the real product photo — describing the
+        # product again risks it drifting toward its own imagined version
+        # instead of the one shown. Standard Kontext edit-prompt pattern:
+        # state what to preserve, then what to change.
+        return f"Keep the product exactly as shown. Restyle the scene for: {campaign_description}"
     return f"{product_title}. {campaign_description}"

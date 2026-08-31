@@ -17,13 +17,21 @@ class ReplicateImageAdapter:
     def __init__(self, settings: Settings) -> None:
         self._api_token = settings.replicate_api_token
 
-    async def generate_image(self, *, prompt: str, model: str, params: dict) -> bytes:
+    async def generate_image(
+        self, *, prompt: str, model: str, params: dict, reference_image_url: str | None = None
+    ) -> bytes:
         headers = {
             "Authorization": f"Bearer {self._api_token}",
             "Content-Type": "application/json",
             "Prefer": "wait",
         }
-        payload = {"input": {"prompt": prompt, **params}}
+        # params spread first so a reference image can't be silently
+        # clobbered by a stray params["input_image"] (none exists today,
+        # but this ordering makes the precedence unambiguous either way).
+        input_payload = {"prompt": prompt, **params}
+        if reference_image_url is not None:
+            input_payload["input_image"] = reference_image_url
+        payload = {"input": input_payload}
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10)) as client:
             response = await client.post(

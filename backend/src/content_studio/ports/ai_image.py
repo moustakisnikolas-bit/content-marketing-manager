@@ -7,4 +7,14 @@ class AIImagePort(Protocol):
     28_OSS_TECHNOLOGY_STACK.md). Returns raw image bytes — the caller
     stores them via ObjectStoragePort, keeping the two ports orthogonal."""
 
-    async def generate_image(self, *, prompt: str, model: str, params: dict) -> bytes: ...
+    async def generate_image(
+        self, *, prompt: str, model: str, params: dict, reference_image_url: str | None = None
+    ) -> bytes:
+        """reference_image_url, when given, is a real photo the model
+        should edit/restyle rather than generate a subject from scratch —
+        only meaningful for providers/models that support image-to-image
+        (e.g. Replicate's flux-kontext-pro). Implementations that receive
+        it for a model without such support should just ignore it rather
+        than error, same "best-effort extra" posture as the rest of this
+        port's optional behavior."""
+        ...

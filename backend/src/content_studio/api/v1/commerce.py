@@ -334,6 +334,7 @@ async def bulk_generate_product_campaign(
             content_item_id=prepared_item.prepared.content_item_id, recipe_id=prepared_item.prepared.recipe_id,
             requested_by_user_id=current_user.id, subscription_id=context.subscription_id,
             brief_text=prepared_item.prepared.brief_text,
+            reference_image_url=prepared_item.prepared.reference_image_url,
         )
         jobs.append((job, prepared_item.plan_item))
     await session.commit()
