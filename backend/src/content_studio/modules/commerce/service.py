@@ -574,7 +574,13 @@ def _build_text_brief(
     recent_captions: list[str],
     recent_rejection_feedback: list[str],
 ) -> str:
-    lines = [f"Write a social media caption for: {product_title}."]
+    lines = [
+        f"Write a social media caption for: {product_title}.",
+        (
+            f'Name this specific product/scent ("{product_title}") clearly in the caption — '
+            "don't write generic copy that could describe any product in the line."
+        ),
+    ]
     if product_line_description:
         lines.append(f"About our business: {product_line_description}")
     lines.append(f"This post should focus on: {campaign_description}")

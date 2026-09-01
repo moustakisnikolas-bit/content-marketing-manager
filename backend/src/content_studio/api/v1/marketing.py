@@ -203,6 +203,32 @@ async def start_plan_item(
     return {"status": "started", "job_id": str(job.id)}
 
 
+@router.post("/campaigns/{campaign_id}/items/{item_id}/remove", status_code=status.HTTP_202_ACCEPTED)
+async def remove_plan_item(
+    campaign_id: uuid.UUID,
+    item_id: uuid.UUID,
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Soft-removes a product's item from a campaign by reusing the
+    existing "cancelled" status, rather than deleting the row — keeps any
+    already-spent generation cost in the audit trail, same reasoning as
+    every other status transition in this module."""
+    repo = MarketingRepository(session)
+    campaign = await repo.get_campaign_by_id(campaign_id)
+    if campaign is None or campaign.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
+    plan_item = await repo.get_plan_item_by_id(item_id)
+    if plan_item is None or plan_item.campaign_id != campaign_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan item not found")
+    if plan_item.status == "cancelled":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Item is already removed")
+
+    await repo.update_plan_item_status(plan_item, "cancelled")
+    await session.commit()
+    return {"status": "cancelled"}
+
+
 @router.post("/campaigns/{campaign_id}/autopilot-policy", response_model=AutoPilotPolicyOut, status_code=status.HTTP_201_CREATED)
 async def create_autopilot_policy(
     campaign_id: uuid.UUID,

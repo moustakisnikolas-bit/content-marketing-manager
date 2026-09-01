@@ -265,6 +265,7 @@ function PlanItemReviewPanel({
 function CampaignDetail({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient();
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
+  const [removingItemId, setRemovingItemId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const { data: detail } = useQuery({
@@ -283,6 +284,21 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
       toast.error("Couldn't start this item.");
     } finally {
       setStartingItemId(null);
+    }
+  };
+
+  const handleRemoveItem = async (itemId: string) => {
+    if (!window.confirm("Remove this product from the campaign?")) return;
+    setRemovingItemId(itemId);
+    try {
+      await api.removePlanItem(campaignId, itemId);
+      toast.success("Removed from campaign");
+      if (reviewingId === itemId) setReviewingId(null);
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+    } catch {
+      toast.error("Couldn't remove this item.");
+    } finally {
+      setRemovingItemId(null);
     }
   };
 
@@ -338,19 +354,34 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
                       {item.target_platform && ` · ${item.target_platform}`}
                     </p>
                   </div>
-                  {item.status === "pending" && (
-                    <Button
-                      size="sm"
-                      disabled={startingItemId === item.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleStartItem(item.id);
-                      }}
-                    >
-                      Start
-                    </Button>
-                  )}
-                  {reviewable && <span className="text-xs font-medium text-primary">Review →</span>}
+                  <div className="flex items-center gap-2">
+                    {item.status === "pending" && (
+                      <Button
+                        size="sm"
+                        disabled={startingItemId === item.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleStartItem(item.id);
+                        }}
+                      >
+                        Start
+                      </Button>
+                    )}
+                    {item.status !== "cancelled" && item.status !== "published" && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={removingItemId === item.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveItem(item.id);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                    {reviewable && <span className="text-xs font-medium text-primary">Review →</span>}
+                  </div>
                 </li>
               );
             })}

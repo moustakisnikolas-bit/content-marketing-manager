@@ -570,6 +570,9 @@ export const api = {
   startPlanItem: (campaignId: string, itemId: string) =>
     apiClient.post<{ status: string; job_id: string }>(`/marketing/campaigns/${campaignId}/items/${itemId}/start`),
 
+  removePlanItem: (campaignId: string, itemId: string) =>
+    apiClient.post<{ status: string }>(`/marketing/campaigns/${campaignId}/items/${itemId}/remove`),
+
   createAutoPilotPolicy: (
     campaignId: string,
     payload: {
