@@ -23,20 +23,39 @@ class SeaweedFSObjectStorage:
 
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.object_storage_bucket
+        boto_config = BotoConfig(
+            signature_version="s3v4",
+            connect_timeout=5,
+            read_timeout=10,
+            retries={"max_attempts": 2, "mode": "standard"},
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        )
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.object_storage_endpoint,
             aws_access_key_id=settings.object_storage_access_key,
             aws_secret_access_key=settings.object_storage_secret_key,
             region_name="us-east-1",
-            config=BotoConfig(
-                signature_version="s3v4",
-                connect_timeout=5,
-                read_timeout=10,
-                retries={"max_attempts": 2, "mode": "standard"},
-                request_checksum_calculation="when_required",
-                response_checksum_validation="when_required",
-            ),
+            config=boto_config,
+        )
+        # Presigned URLs from self._client would carry the Docker-internal
+        # endpoint above, unreachable from a browser — a second client,
+        # identical except for its endpoint_url, generates URLs the browser
+        # can actually fetch. Same client (and object_storage_public_endpoint
+        # left empty) when there's no separate public endpoint, e.g. local dev.
+        public_endpoint = settings.object_storage_public_endpoint or settings.object_storage_endpoint
+        self._presign_client = (
+            self._client
+            if public_endpoint == settings.object_storage_endpoint
+            else boto3.client(
+                "s3",
+                endpoint_url=public_endpoint,
+                aws_access_key_id=settings.object_storage_access_key,
+                aws_secret_access_key=settings.object_storage_secret_key,
+                region_name="us-east-1",
+                config=boto_config,
+            )
         )
         self._bucket_ready = False
 
@@ -74,7 +93,7 @@ class SeaweedFSObjectStorage:
     async def get_presigned_url(self, *, key: str, expires_in_seconds: int = 3600) -> str:
         return await asyncio.to_thread(
             partial(
-                self._client.generate_presigned_url,
+                self._presign_client.generate_presigned_url,
                 "get_object",
                 Params={"Bucket": self._bucket, "Key": key},
                 ExpiresIn=expires_in_seconds,

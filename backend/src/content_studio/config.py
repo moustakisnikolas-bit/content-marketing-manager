@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     object_storage_endpoint: str = "http://localhost:8333"
+    # Presigned GET URLs are handed straight to the browser, which can't
+    # resolve the Docker-internal endpoint above (only backend/worker can).
+    # Empty means "same as object_storage_endpoint" — true in local dev,
+    # where both the app and the browser are on localhost.
+    object_storage_public_endpoint: str = ""
     object_storage_bucket: str = "content-studio-assets"
     object_storage_access_key: str = "dev"
     object_storage_secret_key: str = "dev-secret"
