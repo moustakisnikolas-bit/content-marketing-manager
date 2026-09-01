@@ -23,6 +23,7 @@ from content_studio.modules.creation.schemas import (
     ReviewRequest,
 )
 from content_studio.modules.identity.models import User
+from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.workflows.client import get_temporal_client
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
 
@@ -143,7 +144,7 @@ async def review_generation_job(
     context: WorkspaceContext = Depends(get_workspace_context),
     session: AsyncSession = Depends(get_db_session),
     temporal: Client = Depends(get_temporal_client_dep),
-) -> dict[str, str]:
+) -> dict[str, str | None]:
     repo = CreationRepository(session)
     job = await repo.get_generation_job_by_id(job_id)
     if job is None or job.workspace_id != context.workspace_id:
@@ -158,4 +159,40 @@ async def review_generation_job(
         GenerationWorkflow.submit_review,
         args=[body.decision, str(current_user.id), body.comment],
     )
-    return {"status": "signal_sent"}
+
+    if body.decision != "rejected":
+        return {"status": "signal_sent", "new_job_id": None}
+
+    new_brief_text = f"{job.brief_text}\n\nRevision requested: {body.comment}" if body.comment else job.brief_text
+    new_job = await repo.create_generation_job(
+        organization_id=job.organization_id,
+        workspace_id=job.workspace_id,
+        content_item_id=job.content_item_id,
+        recipe_id=job.recipe_id,
+        requested_by_user_id=current_user.id,
+        subscription_id=job.subscription_id,
+        brief_text=new_brief_text,
+        reference_image_url=job.reference_image_url,
+    )
+    await session.commit()
+
+    settings = get_settings()
+    new_workflow_id = f"generation-{new_job.id}"
+    await temporal.start_workflow(
+        GenerationWorkflow.run,
+        GenerationWorkflowInput(job_id=str(new_job.id)),
+        id=new_workflow_id,
+        task_queue=settings.temporal_task_queue,
+    )
+    await repo.set_job_workflow_id(new_job, new_workflow_id)
+    await session.commit()
+
+    marketing_repo = MarketingRepository(session)
+    plan_item = await marketing_repo.get_plan_item_by_generation_job_id(job_id)
+    if plan_item is not None:
+        await marketing_repo.link_plan_item_generation(
+            plan_item, content_item_id=job.content_item_id, generation_job_id=new_job.id
+        )
+        await session.commit()
+
+    return {"status": "signal_sent", "new_job_id": str(new_job.id)}

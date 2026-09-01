@@ -17,6 +17,7 @@ from content_studio.modules.commerce.exceptions import (
 from content_studio.modules.commerce.models import Product, StoreConnection
 from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.webhook_signature import verify_signature
+from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.governance.service import AuditService
 from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.marketing.exceptions import CampaignNotFound
@@ -389,6 +390,9 @@ class CommerceService:
 
         product_line_description = await self._get_product_line_description(workspace_id)
         recent_captions = await self._get_recent_post_captions(workspace_id)
+        recent_rejection_feedback = await CreationRepository(self._session).list_recent_rejection_comments_for_workspace(
+            workspace_id
+        )
 
         campaign: Campaign
         if campaign_id is None:
@@ -430,6 +434,7 @@ class CommerceService:
             text_brief = _build_text_brief(
                 product_title=product.title, product_line_description=product_line_description,
                 campaign_description=description, recent_captions=recent_captions,
+                recent_rejection_feedback=recent_rejection_feedback,
             )
             text_item = await marketing_repo.create_plan_item(
                 campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
@@ -562,7 +567,12 @@ def _to_decimal(value: str | None) -> Decimal | None:
 
 
 def _build_text_brief(
-    *, product_title: str, product_line_description: str | None, campaign_description: str, recent_captions: list[str]
+    *,
+    product_title: str,
+    product_line_description: str | None,
+    campaign_description: str,
+    recent_captions: list[str],
+    recent_rejection_feedback: list[str],
 ) -> str:
     lines = [f"Write a social media caption for: {product_title}."]
     if product_line_description:
@@ -571,6 +581,9 @@ def _build_text_brief(
     if recent_captions:
         lines.append("Match the tone and style of these recent posts we've published:")
         lines.extend(f"- {caption}" for caption in recent_captions[:3])
+    if recent_rejection_feedback:
+        lines.append("Avoid these previously flagged issues:")
+        lines.extend(f"- {comment}" for comment in recent_rejection_feedback[:3])
     return "\n".join(lines)
 
 
@@ -579,6 +592,12 @@ def _build_image_edit_prompt(*, product_title: str, campaign_description: str, h
         # The model already sees the real product photo — describing the
         # product again risks it drifting toward its own imagined version
         # instead of the one shown. Standard Kontext edit-prompt pattern:
-        # state what to preserve, then what to change.
-        return f"Keep the product exactly as shown. Restyle the scene for: {campaign_description}"
+        # state what to preserve, then what to change — and ground the
+        # change in the product's own name/scent, not just the generic
+        # campaign angle, so a "Whiskey Caramel" candle actually gets a
+        # background that reads as whiskey-and-caramel, not an arbitrary one.
+        return (
+            f"Keep the product exactly as shown. Restyle the background to a scene that evokes "
+            f"'{product_title}': {campaign_description}"
+        )
     return f"{product_title}. {campaign_description}"

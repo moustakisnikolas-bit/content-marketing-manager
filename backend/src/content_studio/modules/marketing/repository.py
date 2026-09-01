@@ -179,6 +179,12 @@ class MarketingRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_plan_item_by_generation_job_id(self, generation_job_id: uuid.UUID) -> CampaignPlanItem | None:
+        result = await self._session.execute(
+            select(CampaignPlanItem).where(CampaignPlanItem.generation_job_id == generation_job_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_plan_items_for_campaign(self, campaign_id: uuid.UUID) -> list[CampaignPlanItem]:
         result = await self._session.execute(
             select(CampaignPlanItem)

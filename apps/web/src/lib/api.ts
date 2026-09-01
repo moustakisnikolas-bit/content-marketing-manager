@@ -512,7 +512,7 @@ export const api = {
   reviewGenerationJob: (
     jobId: string,
     payload: { decision: "approved" | "rejected"; revision_id: string; comment?: string },
-  ) => apiClient.post<{ status: string }>(`/content/jobs/${jobId}/review`, payload),
+  ) => apiClient.post<{ status: string; new_job_id: string | null }>(`/content/jobs/${jobId}/review`, payload),
 
   listGenerationJobs: () => apiClient.get<GenerationJobOut[]>("/content/jobs"),
 

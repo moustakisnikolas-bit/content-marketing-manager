@@ -300,6 +300,26 @@ class CreationRepository:
         await self._session.flush()
         return review
 
+    async def list_recent_rejection_comments_for_workspace(self, workspace_id: uuid.UUID, *, limit: int = 5) -> list[str]:
+        """Feeds commerce/service.py's bulk text-brief construction with
+        "avoid these previously flagged issues" guidance — same
+        accumulated-context approach already used for recent-post style
+        reference."""
+        result = await self._session.execute(
+            select(Review.comment)
+            .join(ContentRevision, ContentRevision.id == Review.content_revision_id)
+            .join(ContentItem, ContentItem.id == ContentRevision.content_item_id)
+            .where(
+                ContentItem.workspace_id == workspace_id,
+                Review.decision == "rejected",
+                Review.comment.isnot(None),
+                Review.comment != "",
+            )
+            .order_by(Review.created_at.desc())
+            .limit(limit)
+        )
+        return [comment for comment in result.scalars().all() if comment]
+
     # -- Content packages ------------------------------------------------
 
     async def create_package(

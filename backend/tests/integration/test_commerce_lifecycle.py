@@ -469,7 +469,10 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     # not re-describe the product from scratch.
     with_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[0].id and p.plan_item.content_type == "image")
     assert with_reference.prepared.reference_image_url == "https://example.com/candle-a.jpg"
-    assert with_reference.plan_item.brief_text == "Keep the product exactly as shown. Restyle the scene for: 20% off this week"
+    assert with_reference.plan_item.brief_text == (
+        "Keep the product exactly as shown. Restyle the background to a scene that evokes "
+        "'Candle A': 20% off this week"
+    )
 
     # Candle B has no synced photo — falls back to today's text-to-image behavior.
     without_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[1].id and p.plan_item.content_type == "image")
@@ -570,4 +573,43 @@ async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(
     assert "New arrivals just dropped" in text_item.brief_text
     # Candle A has a synced photo — image brief is the edit-style prompt, not a re-description.
     assert "20% off this week" in image_item.brief_text
-    assert image_item.brief_text == "Keep the product exactly as shown. Restyle the scene for: 20% off this week"
+    assert image_item.brief_text == (
+        "Keep the product exactly as shown. Restyle the background to a scene that evokes "
+        "'Candle A': 20% off this week"
+    )
+
+
+async def test_bulk_plan_items_text_briefs_include_rejection_feedback_but_image_briefs_dont(
+    db_session: AsyncSession,
+) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    creation_repo = CreationRepository(db_session)
+    item = await creation_repo.create_content_item(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        created_by_user_id=ctx["user_id"], content_type="text", title="Past attempt",
+    )
+    revision = await creation_repo.create_revision(
+        content_item_id=item.id, generation_attempt_id=None, revision_number=1, text_body="Old draft",
+    )
+    await creation_repo.create_review(
+        content_revision_id=revision.id, reviewer_user_id=ctx["user_id"], decision="rejected",
+        comment="Avoid using emojis in captions",
+    )
+    await db_session.commit()
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "Avoid these previously flagged issues:" in text_item.brief_text
+    assert "Avoid using emojis in captions" in text_item.brief_text
+    assert "Avoid using emojis in captions" not in image_item.brief_text

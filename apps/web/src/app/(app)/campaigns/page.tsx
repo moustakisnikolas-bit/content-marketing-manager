@@ -170,6 +170,7 @@ function PlanItemReviewPanel({
 }) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
+  const [instructions, setInstructions] = useState("");
 
   const { data: detail } = useQuery({
     queryKey: ["content", "items", item.content_item_id],
@@ -182,8 +183,14 @@ function PlanItemReviewPanel({
     if (!latestRevision || !item.generation_job_id) return;
     setBusy(true);
     try {
-      await api.reviewGenerationJob(item.generation_job_id, { decision, revision_id: latestRevision.id });
-      toast.success(decision === "approved" ? "Approved" : "Rejected");
+      await api.reviewGenerationJob(item.generation_job_id, {
+        decision,
+        revision_id: latestRevision.id,
+        comment: decision === "rejected" ? instructions.trim() || undefined : undefined,
+      });
+      toast.success(
+        decision === "approved" ? "Approved" : "Rejected — a new attempt is being generated with your feedback",
+      );
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
       onDecided();
     } catch {
@@ -214,6 +221,18 @@ function PlanItemReviewPanel({
         ) : (
           <p className="text-sm text-muted-foreground">Loading preview...</p>
         )}
+
+        <div className="space-y-1">
+          <Label htmlFor={`instructions-${item.id}`}>What should change? (optional, used if you reject)</Label>
+          <textarea
+            id={`instructions-${item.id}`}
+            rows={2}
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+            placeholder="e.g. make the tone more playful, mention the discount code"
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+          />
+        </div>
 
         <div className="flex items-center justify-between pt-2">
           <div className="flex gap-2">
@@ -341,6 +360,7 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
 
       {reviewingItem && (
         <PlanItemReviewPanel
+          key={reviewingItem.id}
           campaignId={campaignId}
           item={reviewingItem}
           hasPrevious={reviewingIndex > 0}

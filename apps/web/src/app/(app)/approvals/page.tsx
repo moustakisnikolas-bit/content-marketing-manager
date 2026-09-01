@@ -5,30 +5,82 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { api } from "@/lib/api";
+import { Label } from "@/components/ui/label";
+import { api, type GenerationJobOut } from "@/lib/api";
+
+function ApprovalRow({
+  job,
+  title,
+  onReviewed,
+}: {
+  job: GenerationJobOut;
+  title: string;
+  onReviewed: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [instructions, setInstructions] = useState("");
+
+  const handleReview = async (decision: "approved" | "rejected") => {
+    setBusy(true);
+    try {
+      const detail = await api.getContentItem(job.content_item_id);
+      const latestRevision = detail.revisions.at(-1);
+      if (!latestRevision) return;
+      await api.reviewGenerationJob(job.id, {
+        decision,
+        revision_id: latestRevision.id,
+        comment: decision === "rejected" ? instructions.trim() || undefined : undefined,
+      });
+      toast.success(
+        decision === "approved" ? "Approved" : "Rejected — a new attempt is being generated with your feedback",
+      );
+      await onReviewed();
+    } catch {
+      toast.error("Couldn't submit review.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">{title}</span>
+        <div className="flex gap-2">
+          <Button size="sm" disabled={busy} onClick={() => handleReview("approved")}>
+            Approve
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => handleReview("rejected")}>
+            Reject
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor={`instructions-${job.id}`} className="text-xs text-muted-foreground">
+          What should change? (optional, used if you reject)
+        </Label>
+        <textarea
+          id={`instructions-${job.id}`}
+          rows={2}
+          className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+          placeholder="e.g. make the tone more playful, mention the discount code"
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+        />
+      </div>
+    </div>
+  );
+}
 
 function ContentApprovals() {
   const queryClient = useQueryClient();
-  const [busyJobId, setBusyJobId] = useState<string | null>(null);
 
   const { data: jobs } = useQuery({ queryKey: ["content", "jobs"], queryFn: api.listGenerationJobs });
   const { data: items } = useQuery({ queryKey: ["content", "items"], queryFn: api.listContentItems });
   const pending = jobs?.filter((j) => j.status === "awaiting_review") ?? [];
 
-  const handleReview = async (jobId: string, decision: "approved" | "rejected") => {
-    setBusyJobId(jobId);
-    try {
-      const detail = await api.getContentItem(jobs!.find((j) => j.id === jobId)!.content_item_id);
-      const latestRevision = detail.revisions.at(-1);
-      if (!latestRevision) return;
-      await api.reviewGenerationJob(jobId, { decision, revision_id: latestRevision.id });
-      toast.success(decision === "approved" ? "Approved" : "Rejected");
-      await queryClient.invalidateQueries({ queryKey: ["content", "jobs"] });
-    } catch {
-      toast.error("Couldn't submit review.");
-    } finally {
-      setBusyJobId(null);
-    }
+  const handleReviewed = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["content", "jobs"] });
   };
 
   if (pending.length === 0) return null;
@@ -43,22 +95,7 @@ function ContentApprovals() {
         {pending.map((job) => {
           const item = items?.find((i) => i.id === job.content_item_id);
           return (
-            <div key={job.id} className="flex items-center justify-between rounded-md border border-border p-3">
-              <span className="text-sm font-medium">{item?.title ?? "Content"}</span>
-              <div className="flex gap-2">
-                <Button size="sm" disabled={busyJobId === job.id} onClick={() => handleReview(job.id, "approved")}>
-                  Approve
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busyJobId === job.id}
-                  onClick={() => handleReview(job.id, "rejected")}
-                >
-                  Reject
-                </Button>
-              </div>
-            </div>
+            <ApprovalRow key={job.id} job={job} title={item?.title ?? "Content"} onReviewed={handleReviewed} />
           );
         })}
       </CardContent>
