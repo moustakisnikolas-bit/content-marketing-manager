@@ -362,6 +362,19 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
 
   return (
     <div className="space-y-6">
+      {reviewingItem && (
+        <PlanItemReviewPanel
+          key={reviewingItem.id}
+          campaignId={campaignId}
+          item={reviewingItem}
+          hasPrevious={reviewingIndex > 0}
+          hasNext={reviewingIndex < reviewableItems.length - 1}
+          onNavigate={handleNavigate}
+          onDecided={handleDecided}
+          onClose={() => setReviewingId(null)}
+        />
+      )}
+
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between gap-2">
@@ -439,19 +452,6 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
           </ul>
         </CardContent>
       </Card>
-
-      {reviewingItem && (
-        <PlanItemReviewPanel
-          key={reviewingItem.id}
-          campaignId={campaignId}
-          item={reviewingItem}
-          hasPrevious={reviewingIndex > 0}
-          hasNext={reviewingIndex < reviewableItems.length - 1}
-          onNavigate={handleNavigate}
-          onDecided={handleDecided}
-          onClose={() => setReviewingId(null)}
-        />
-      )}
 
       <AutoPilotSection campaignId={campaignId} />
 
