@@ -149,6 +149,12 @@ services:
   seaweedfs:
     image: chrislusf/seaweedfs:latest
     command: ["server", "-s3", "-s3.port=8333", "-dir=/data", "-master.volumeSizeLimitMB=1024"]
+    # A published port (not just `expose:`) is what Coolify's Traefik
+    # auto-port-detection actually keys off, same as backend/frontend below —
+    # confirmed needed after docker_compose_domains routing 502'd with no
+    # loadbalancer.server.port label until this was added.
+    ports:
+      - "8333:8333"
     volumes:
       - seaweedfs_data:/data
 
