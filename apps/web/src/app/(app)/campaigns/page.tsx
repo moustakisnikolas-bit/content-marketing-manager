@@ -219,7 +219,11 @@ function PlanItemReviewPanel({
       </CardHeader>
       <CardContent className="space-y-4">
         {detail && latestRevision ? (
-          <RevisionPreview revision={latestRevision} contentType={item.content_type} />
+          <RevisionPreview
+            revision={latestRevision}
+            contentType={item.content_type}
+            onEdited={() => queryClient.invalidateQueries({ queryKey: ["content", "items"] })}
+          />
         ) : (
           <p className="text-sm text-muted-foreground">Loading preview...</p>
         )}

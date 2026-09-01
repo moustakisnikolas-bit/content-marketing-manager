@@ -515,6 +515,12 @@ export const api = {
     payload: { decision: "approved" | "rejected"; revision_id: string; comment?: string },
   ) => apiClient.post<{ status: string; new_job_id: string | null }>(`/content/jobs/${jobId}/review`, payload),
 
+  editRevisionText: (revisionId: string, textBody: string) =>
+    apiClient.post<{ revision: ContentRevisionOut; applied_to_siblings: number }>(
+      `/content/revisions/${revisionId}/edit`,
+      { text_body: textBody },
+    ),
+
   listGenerationJobs: () => apiClient.get<GenerationJobOut[]>("/content/jobs"),
 
   getAuthorizationUrl: (platform: Platform) =>

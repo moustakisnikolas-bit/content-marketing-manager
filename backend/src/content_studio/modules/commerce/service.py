@@ -394,9 +394,9 @@ class CommerceService:
 
         product_line_description = await self._get_product_line_description(workspace_id)
         recent_captions = await self._get_recent_post_captions(workspace_id)
-        recent_rejection_feedback = await CreationRepository(self._session).list_recent_rejection_comments_for_workspace(
-            workspace_id
-        )
+        creation_repo = CreationRepository(self._session)
+        recent_rejection_feedback = await creation_repo.list_recent_rejection_comments_for_workspace(workspace_id)
+        learned_deletions = await creation_repo.list_recent_text_edit_learnings_for_workspace(workspace_id)
 
         campaign: Campaign
         if campaign_id is None:
@@ -439,7 +439,7 @@ class CommerceService:
             text_brief = _build_text_brief(
                 product_title=content_title, product_line_description=product_line_description,
                 campaign_description=description, recent_captions=recent_captions,
-                recent_rejection_feedback=recent_rejection_feedback,
+                recent_rejection_feedback=recent_rejection_feedback, learned_deletions=learned_deletions,
             )
             text_item = await marketing_repo.create_plan_item(
                 campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
@@ -588,6 +588,7 @@ def _build_text_brief(
     campaign_description: str,
     recent_captions: list[str],
     recent_rejection_feedback: list[str],
+    learned_deletions: list[str],
 ) -> str:
     lines = [
         f"Write a social media caption for: {product_title}.",
@@ -605,6 +606,9 @@ def _build_text_brief(
     if recent_rejection_feedback:
         lines.append("Avoid these previously flagged issues:")
         lines.extend(f"- {comment}" for comment in recent_rejection_feedback[:3])
+    if learned_deletions:
+        lines.append("Don't include phrases like these — they were removed from previous captions:")
+        lines.extend(f"- {phrase}" for phrase in learned_deletions[:3])
     return "\n".join(lines)
 
 

@@ -249,6 +249,32 @@ class Review(UUIDPrimaryKeyMixin, Base):
     revision: Mapped["ContentRevision"] = relationship(back_populates="reviews")
 
 
+class TextEditLearning(UUIDPrimaryKeyMixin, TenantScopedMixin, Base):
+    """A phrase the user deliberately deleted while editing a generated
+    text revision — extracted via text_diff.extract_meaningful_deletions().
+    Append-only, same shape as Review. Read back two ways: immediately, to
+    strip the same phrase from sibling not-yet-reviewed items in the same
+    campaign; and later, folded into future bulk-generation text briefs so
+    new content stops including it in the first place."""
+
+    __tablename__ = "text_edit_learnings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], ondelete="CASCADE",
+            name="fk_text_edit_learnings_organization_id_organizations",
+        ),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_content_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_revisions.id", ondelete="CASCADE"), nullable=False
+    )
+    deleted_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ContentPackage(UUIDPrimaryKeyMixin, Base):
     """The finished, approved deliverable for a ContentItem."""
 

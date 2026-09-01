@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RevisionPreview } from "@/components/revision-preview";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 
@@ -78,15 +79,11 @@ function JobTracker({ jobId, contentItemId }: { jobId: string; contentItemId: st
       </CardHeader>
       {job.status === "awaiting_review" && latestRevision && (
         <CardContent className="space-y-4">
-          {latestRevision.text_body ? (
-            <p className="rounded-md border border-border bg-muted/40 p-4 text-sm whitespace-pre-wrap">
-              {latestRevision.text_body}
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              An image was generated — check Assets once approved to download it.
-            </p>
-          )}
+          <RevisionPreview
+            revision={latestRevision}
+            contentType={detail?.item.content_type ?? "text"}
+            onEdited={() => queryClient.invalidateQueries({ queryKey: ["content", "items", contentItemId] })}
+          />
           <div className="flex gap-2">
             <Button onClick={() => handleReview("approved")} disabled={reviewing}>
               Approve

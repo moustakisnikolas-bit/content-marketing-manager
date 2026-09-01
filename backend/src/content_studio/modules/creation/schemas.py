@@ -88,3 +88,12 @@ class ReviewRequest(BaseModel):
     decision: str = Field(pattern="^(approved|rejected)$")
     revision_id: uuid.UUID
     comment: str | None = Field(default=None, max_length=1000)
+
+
+class EditRevisionTextRequest(BaseModel):
+    text_body: str = Field(min_length=1, max_length=4000)
+
+
+class EditRevisionTextResponse(BaseModel):
+    revision: ContentRevisionOut
+    applied_to_siblings: int

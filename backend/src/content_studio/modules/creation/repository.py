@@ -13,6 +13,7 @@ from content_studio.modules.creation.models import (
     GenerationAttempt,
     GenerationJob,
     Review,
+    TextEditLearning,
 )
 
 
@@ -265,6 +266,10 @@ class CreationRepository:
         revision.kind = "final_render"
         await self._session.flush()
 
+    async def update_revision_text(self, revision: ContentRevision, text_body: str) -> None:
+        revision.text_body = text_body
+        await self._session.flush()
+
     async def next_revision_number(self, content_item_id: uuid.UUID) -> int:
         result = await self._session.execute(
             select(ContentRevision).where(ContentRevision.content_item_id == content_item_id)
@@ -319,6 +324,38 @@ class CreationRepository:
             .limit(limit)
         )
         return [comment for comment in result.scalars().all() if comment]
+
+    # -- Text edit learnings ----------------------------------------------
+
+    async def create_text_edit_learning(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        source_content_revision_id: uuid.UUID,
+        deleted_text: str,
+    ) -> TextEditLearning:
+        learning = TextEditLearning(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            source_content_revision_id=source_content_revision_id,
+            deleted_text=deleted_text,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(learning)
+        await self._session.flush()
+        return learning
+
+    async def list_recent_text_edit_learnings_for_workspace(
+        self, workspace_id: uuid.UUID, *, limit: int = 10
+    ) -> list[str]:
+        result = await self._session.execute(
+            select(TextEditLearning.deleted_text)
+            .where(TextEditLearning.workspace_id == workspace_id)
+            .order_by(TextEditLearning.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     # -- Content packages ------------------------------------------------
 

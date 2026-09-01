@@ -185,6 +185,16 @@ class MarketingRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_plan_item_by_content_item_id(self, content_item_id: uuid.UUID) -> CampaignPlanItem | None:
+        # content_item_id stays stable across regenerations (a new job
+        # reuses the same content_item_id), unlike generation_job_id — the
+        # right key to resolve "which plan item does this revision belong
+        # to" regardless of how many regen rounds it's been through.
+        result = await self._session.execute(
+            select(CampaignPlanItem).where(CampaignPlanItem.content_item_id == content_item_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_plan_items_for_campaign(self, campaign_id: uuid.UUID) -> list[CampaignPlanItem]:
         result = await self._session.execute(
             select(CampaignPlanItem)

@@ -21,9 +21,13 @@ from content_studio.modules.creation.schemas import (
     ContentRevisionOut,
     CreateBriefRequest,
     CreateBriefResponse,
+    EditRevisionTextRequest,
+    EditRevisionTextResponse,
     GenerationJobOut,
     ReviewRequest,
 )
+from content_studio.modules.creation.text_diff import extract_meaningful_deletions
+from content_studio.modules.governance.service import AuditService
 from content_studio.modules.identity.models import User
 from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.workflows.client import get_temporal_client
@@ -207,6 +211,88 @@ async def get_content_item(
         item=ContentItemOut.model_validate(item),
         revisions=[ContentRevisionOut.model_validate(r) for r in revisions],
         package=ContentPackageOut.model_validate(package) if package else None,
+    )
+
+
+@router.post("/revisions/{revision_id}/edit", response_model=EditRevisionTextResponse)
+async def edit_revision_text(
+    revision_id: uuid.UUID,
+    body: EditRevisionTextRequest,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> EditRevisionTextResponse:
+    """Lets a reviewer fix generated text directly instead of only
+    Approve/Reject — a rejection burns a full regeneration for what might
+    be a one-word fix. Diffs what was deleted (extract_meaningful_deletions)
+    and, when this revision belongs to a bulk-campaign plan item, strips
+    the same phrase from every sibling text item still awaiting review in
+    the same campaign right now — the actual pain point being solved is
+    not re-typing the same fix across a whole batch. Also persists each
+    deletion as a TextEditLearning row so future generations avoid it too
+    (see commerce/service.py's _build_text_brief)."""
+    repo = CreationRepository(session)
+    revision = await repo.get_revision_by_id(revision_id)
+    if revision is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Revision not found")
+    item = await repo.get_content_item_by_id(revision.content_item_id)
+    if item is None or item.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Revision not found")
+    if revision.text_body is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "This revision has no text to edit")
+
+    deletions = extract_meaningful_deletions(revision.text_body, body.text_body)
+    for deleted in deletions:
+        await repo.create_text_edit_learning(
+            organization_id=item.organization_id,
+            workspace_id=item.workspace_id,
+            source_content_revision_id=revision.id,
+            deleted_text=deleted,
+        )
+    await repo.update_revision_text(revision, body.text_body)
+
+    applied_to_siblings = 0
+    marketing_repo = MarketingRepository(session)
+    plan_item = await marketing_repo.get_plan_item_by_content_item_id(revision.content_item_id)
+    if plan_item is not None and deletions:
+        siblings = await marketing_repo.list_plan_items_for_campaign(plan_item.campaign_id)
+        for sibling in siblings:
+            if (
+                sibling.id == plan_item.id
+                or sibling.content_type != "text"
+                or sibling.content_item_id is None
+                or sibling.generation_job_id is None
+            ):
+                continue
+            sibling_job = await repo.get_generation_job_by_id(sibling.generation_job_id)
+            if sibling_job is None or sibling_job.status != "awaiting_review":
+                continue
+            sibling_revisions = await repo.list_revisions_for_item(sibling.content_item_id)
+            if not sibling_revisions or sibling_revisions[-1].text_body is None:
+                continue
+            sibling_revision = sibling_revisions[-1]
+            updated_text = sibling_revision.text_body
+            for deleted in deletions:
+                updated_text = updated_text.replace(deleted, "")
+            if updated_text != sibling_revision.text_body:
+                await repo.update_revision_text(sibling_revision, updated_text)
+                applied_to_siblings += 1
+
+    await AuditService(session).record(
+        event_type="content.revision_edited",
+        actor_type="user",
+        actor_id=str(current_user.id),
+        organization_id=item.organization_id,
+        summary=(
+            f"Edited '{item.title}'"
+            + (f" — applied to {applied_to_siblings} other pending item(s)" if applied_to_siblings else "")
+        ),
+        payload={"revision_id": str(revision.id), "applied_to_siblings": applied_to_siblings},
+    )
+    await session.commit()
+
+    return EditRevisionTextResponse(
+        revision=ContentRevisionOut.model_validate(revision), applied_to_siblings=applied_to_siblings
     )
 
 

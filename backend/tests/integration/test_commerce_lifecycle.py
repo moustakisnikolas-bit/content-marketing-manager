@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.api.deps import WorkspaceContext
-from content_studio.api.v1.content import review_generation_job
+from content_studio.api.v1.content import edit_revision_text, review_generation_job
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.commerce.exceptions import ConsentRequired
@@ -14,7 +14,7 @@ from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.service import CommerceService, _strip_product_size
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
-from content_studio.modules.creation.schemas import ReviewRequest
+from content_studio.modules.creation.schemas import EditRevisionTextRequest, ReviewRequest
 from content_studio.modules.identity.models import User
 from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.identity.service import IdentityService
@@ -645,6 +645,40 @@ async def test_bulk_plan_items_text_briefs_include_rejection_feedback_but_image_
     assert "Avoid using emojis in captions" not in image_item.brief_text
 
 
+async def test_bulk_plan_items_text_briefs_include_learned_deletions(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    creation_repo = CreationRepository(db_session)
+    item = await creation_repo.create_content_item(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        created_by_user_id=ctx["user_id"], content_type="text", title="Past attempt",
+    )
+    revision = await creation_repo.create_revision(
+        content_item_id=item.id, generation_attempt_id=None, revision_number=1, text_body="Old draft",
+    )
+    await creation_repo.create_text_edit_learning(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        source_content_revision_id=revision.id, deleted_text="handmade with love in Greece",
+    )
+    await db_session.commit()
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "Don't include phrases like these" in text_item.brief_text
+    assert "handmade with love in Greece" in text_item.brief_text
+    assert "handmade with love in Greece" not in image_item.brief_text
+
+
 async def _dispatch_text_item_to_awaiting_review(db_session: AsyncSession, ctx: dict, result) -> object:
     """Mirrors what commerce.py's bulk-campaign API endpoint (Phase A-C)
     does for the text item — build_bulk_plan_items() itself only creates
@@ -865,3 +899,83 @@ async def test_bulk_plan_items_briefs_strip_product_weight_suffix(db_session: As
     assert "200γρ" not in text_item.brief_text
     assert "200γρ" not in image_item.brief_text
     assert "Mistral" in text_item.brief_text
+
+
+async def test_editing_revision_text_propagates_deletion_to_pending_siblings_only(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[p.id for p in products], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=False,
+    )
+    assert len(result.prepared_items) == 2
+
+    creation_repo = CreationRepository(db_session)
+    marketing_repo = MarketingRepository(db_session)
+
+    shared_phrase = "handmade with love in Greece"
+    revisions = []
+    for prepared_item in result.prepared_items:
+        job = await creation_repo.create_generation_job(
+            organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+            content_item_id=prepared_item.prepared.content_item_id, recipe_id=prepared_item.prepared.recipe_id,
+            requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+            brief_text=prepared_item.prepared.brief_text,
+        )
+        await marketing_repo.link_plan_item_generation(
+            prepared_item.plan_item, content_item_id=prepared_item.prepared.content_item_id, generation_job_id=job.id
+        )
+        await creation_repo.update_job_status(job, "awaiting_review")
+        revision = await creation_repo.create_revision(
+            content_item_id=prepared_item.prepared.content_item_id, generation_attempt_id=None, revision_number=1,
+            text_body=f"Check out this candle — {shared_phrase}. Only this week!",
+        )
+        revisions.append(revision)
+    await db_session.commit()
+
+    # A third item, already approved — must be left untouched even though
+    # its text also contains the phrase being deleted.
+    third_item = await creation_repo.create_content_item(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], created_by_user_id=ctx["user_id"],
+        content_type="text", title="Already decided",
+    )
+    third_revision = await creation_repo.create_revision(
+        content_item_id=third_item.id, generation_attempt_id=None, revision_number=1,
+        text_body=f"Another caption, {shared_phrase}, already approved.",
+    )
+    third_plan_item = await marketing_repo.create_plan_item(
+        campaign_id=result.campaign_id, sequence_number=99, title="Already decided",
+        brief_text="n/a", product_id=products[0].id, content_type="text",
+    )
+    third_job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=third_item.id,
+        recipe_id=result.prepared_items[0].prepared.recipe_id, requested_by_user_id=ctx["user_id"],
+        subscription_id=ctx["subscription_id"], brief_text="n/a",
+    )
+    await marketing_repo.link_plan_item_generation(
+        third_plan_item, content_item_id=third_item.id, generation_job_id=third_job.id
+    )
+    await creation_repo.update_job_status(third_job, "approved")
+    await db_session.commit()
+
+    context = _context(ctx)
+    user = await db_session.get(User, ctx["user_id"])
+    edited_text = "Check out this candle. Only this week!"
+    response = await edit_revision_text(
+        revision_id=revisions[0].id, body=EditRevisionTextRequest(text_body=edited_text),
+        current_user=user, context=context, session=db_session,
+    )
+
+    assert response.applied_to_siblings == 1
+    assert response.revision.text_body == edited_text
+
+    refreshed_sibling = await creation_repo.get_revision_by_id(revisions[1].id)
+    assert shared_phrase not in refreshed_sibling.text_body
+
+    refreshed_third = await creation_repo.get_revision_by_id(third_revision.id)
+    assert shared_phrase in refreshed_third.text_body  # already-decided item left alone
+
+    learnings = await creation_repo.list_recent_text_edit_learnings_for_workspace(ctx["workspace_id"])
+    assert any(shared_phrase in learning for learning in learnings)

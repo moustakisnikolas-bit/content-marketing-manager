@@ -6,26 +6,33 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { RevisionPreview } from "@/components/revision-preview";
 import { api, type GenerationJobOut } from "@/lib/api";
 
 function ApprovalRow({
   job,
   title,
+  contentType,
   onReviewed,
 }: {
   job: GenerationJobOut;
   title: string;
+  contentType: string;
   onReviewed: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [instructions, setInstructions] = useState("");
 
+  const { data: detail, refetch } = useQuery({
+    queryKey: ["content", "items", job.content_item_id],
+    queryFn: () => api.getContentItem(job.content_item_id),
+  });
+  const latestRevision = detail?.revisions.at(-1);
+
   const handleReview = async (decision: "approved" | "rejected") => {
+    if (!latestRevision) return;
     setBusy(true);
     try {
-      const detail = await api.getContentItem(job.content_item_id);
-      const latestRevision = detail.revisions.at(-1);
-      if (!latestRevision) return;
       await api.reviewGenerationJob(job.id, {
         decision,
         revision_id: latestRevision.id,
@@ -47,14 +54,17 @@ function ApprovalRow({
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">{title}</span>
         <div className="flex gap-2">
-          <Button size="sm" disabled={busy} onClick={() => handleReview("approved")}>
+          <Button size="sm" disabled={busy || !latestRevision} onClick={() => handleReview("approved")}>
             Approve
           </Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => handleReview("rejected")}>
+          <Button size="sm" variant="outline" disabled={busy || !latestRevision} onClick={() => handleReview("rejected")}>
             Reject
           </Button>
         </div>
       </div>
+      {latestRevision && (
+        <RevisionPreview revision={latestRevision} contentType={contentType} onEdited={() => refetch()} />
+      )}
       <div className="space-y-1">
         <Label htmlFor={`instructions-${job.id}`} className="text-xs text-muted-foreground">
           What should change? (optional, used if you reject)
@@ -95,7 +105,13 @@ function ContentApprovals() {
         {pending.map((job) => {
           const item = items?.find((i) => i.id === job.content_item_id);
           return (
-            <ApprovalRow key={job.id} job={job} title={item?.title ?? "Content"} onReviewed={handleReviewed} />
+            <ApprovalRow
+              key={job.id}
+              job={job}
+              title={item?.title ?? "Content"}
+              contentType={item?.content_type ?? "text"}
+              onReviewed={handleReviewed}
+            />
           );
         })}
       </CardContent>
