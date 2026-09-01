@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 import httpx
@@ -20,7 +20,7 @@ from content_studio.modules.commerce.webhook_signature import verify_signature
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.governance.service import AuditService
 from content_studio.modules.identity.repository import IdentityRepository
-from content_studio.modules.marketing.exceptions import CampaignNotFound
+from content_studio.modules.marketing.exceptions import CampaignNotFound, NoActiveRecipe
 from content_studio.modules.marketing.models import Campaign, CampaignPlanItem, CampaignProposal
 from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.modules.marketing.service import MarketingService, PreparedGeneration
@@ -381,10 +381,13 @@ class CommerceService:
         shared `description`, and a style reference sampled once from the
         workspace's own recently-published Meta posts (best-effort — a
         missing connection or API failure just means no style reference,
-        never blocks generation). Does NOT start Temporal workflows — same
-        split as prepare_item_generation(), since starting N workflows
-        concurrently needs to happen outside any single AsyncSession-bound
-        call, at the API layer."""
+        never blocks generation). Does NOT start Temporal workflows for the
+        text items — same split as prepare_item_generation(), since
+        starting N workflows concurrently needs to happen outside any
+        single AsyncSession-bound call, at the API layer. Image items get
+        even less here: only a bare "pending" CampaignPlanItem row, no
+        ContentItem/GenerationJob at all — see prepare_paired_image_generation()
+        for why (dispatch is deferred until the paired text is approved)."""
         marketing_service = MarketingService(self._session)
         marketing_repo = MarketingRepository(self._session)
 
@@ -447,6 +450,14 @@ class CommerceService:
 
             if generate_images:
                 sequence_number += 1
+                # Preview only — the brief actually used for generation is
+                # rebuilt from scratch by prepare_paired_image_generation()
+                # once the paired text item is approved, re-reading the
+                # product's photo fresh at that point rather than trusting
+                # whatever it looked like right now. No ContentItem/
+                # GenerationJob/workflow starts for this item here — it
+                # stays "pending" until that approval (or a manual Start,
+                # gated the same way) dispatches it.
                 reference_image_url = (
                     min(product.assets, key=lambda a: a.position).url if product.assets else None
                 )
@@ -454,18 +465,10 @@ class CommerceService:
                     product_title=product.title, campaign_description=description,
                     has_reference_image=reference_image_url is not None,
                 )
-                image_item = await marketing_repo.create_plan_item(
+                await marketing_repo.create_plan_item(
                     campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
                     brief_text=image_brief, target_platform=target_platform,
                     product_id=product.id, content_type="image",
-                )
-                prepared_items.append(
-                    BulkPlanItemPrepared(
-                        plan_item=image_item,
-                        prepared=await marketing_service.prepare_item_generation(
-                            image_item, reference_image_url=reference_image_url,
-                        ),
-                    )
                 )
 
         await self._audit.record(
@@ -607,3 +610,45 @@ def _build_image_edit_prompt(*, product_title: str, campaign_description: str, h
             f"'{product_title}': {campaign_description}"
         )
     return f"{product_title}. {campaign_description}"
+
+
+async def prepare_paired_image_generation(
+    session: AsyncSession, image_plan_item: CampaignPlanItem
+) -> PreparedGeneration | None:
+    """Called when a bulk campaign's paired TEXT item is approved (or its
+    image item is manually started) — deliberately re-reads the product's
+    *current* synced photo and rebuilds the image brief from scratch,
+    rather than trusting whatever build_bulk_plan_items() saw when the
+    campaign was first created. That's the whole point of deferring this:
+    a product photo synced after campaign creation (or changed since) is
+    picked up correctly instead of silently generating a plain AI-imagined
+    image. Returns None (never raises) when there's nothing sensible to
+    dispatch — a deleted product or no active image recipe — so callers can
+    just leave the plan item "pending" for a later retry."""
+    if image_plan_item.product_id is None:
+        return None
+
+    commerce_repo = CommerceRepository(session)
+    product = await commerce_repo.get_product_with_details_by_id(image_plan_item.product_id)
+    if product is None:
+        return None
+
+    marketing_repo = MarketingRepository(session)
+    campaign = await marketing_repo.get_campaign_by_id(image_plan_item.campaign_id)
+    proposal = await marketing_repo.get_proposal_by_id(campaign.proposal_id) if campaign else None
+    brief = await marketing_repo.get_brief_by_id(proposal.brief_id) if proposal else None
+    campaign_description = brief.what_to_promote if brief else ""
+
+    reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
+    image_brief = _build_image_edit_prompt(
+        product_title=product.title, campaign_description=campaign_description,
+        has_reference_image=reference_image_url is not None,
+    )
+
+    try:
+        prepared = await MarketingService(session).prepare_item_generation(
+            image_plan_item, reference_image_url=reference_image_url
+        )
+    except NoActiveRecipe:
+        return None
+    return replace(prepared, brief_text=image_brief)

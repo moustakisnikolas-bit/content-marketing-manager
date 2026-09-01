@@ -5,6 +5,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from content_studio.api.deps import WorkspaceContext
+from content_studio.api.v1.content import review_generation_job
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.commerce.exceptions import ConsentRequired
@@ -12,6 +14,8 @@ from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.service import CommerceService
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
+from content_studio.modules.creation.schemas import ReviewRequest
+from content_studio.modules.identity.models import User
 from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.identity.service import IdentityService
 from content_studio.modules.marketing.exceptions import CampaignNotFound
@@ -21,6 +25,26 @@ from tests.fakes.secrets import FakeSecrets
 from tests.fakes.store_connector import FakeStoreConnector
 
 pytestmark = pytest.mark.asyncio
+
+
+class _FakeWorkflowHandle:
+    def __init__(self, signals: list) -> None:
+        self._signals = signals
+
+    async def signal(self, method, args) -> None:
+        self._signals.append((method, args))
+
+
+class _FakeTemporalClient:
+    def __init__(self) -> None:
+        self.signals: list = []
+        self.started: list = []
+
+    def get_workflow_handle(self, workflow_id: str) -> _FakeWorkflowHandle:
+        return _FakeWorkflowHandle(self.signals)
+
+    async def start_workflow(self, run_fn, input_arg, *, id: str, task_queue: str) -> None:
+        self.started.append({"id": id, "input": input_arg})
 
 
 async def _seed_workspace(session: AsyncSession, *, allowance: Decimal = Decimal(100)) -> dict:
@@ -452,7 +476,12 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     )
 
     assert result.failed_product_ids == []
-    assert len(result.prepared_items) == 4  # 2 products x (text + image)
+    # Only the text items are actually dispatched here — image generation
+    # is deferred until each product's paired text item is approved (see
+    # prepare_paired_image_generation), so image items never reach
+    # prepared_items even though their (preview-only) plan item rows exist.
+    assert len(result.prepared_items) == 2  # 2 products x text only
+    assert {p.plan_item.content_type for p in result.prepared_items} == {"text"}
 
     marketing_repo = MarketingRepository(db_session)
     items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
@@ -464,20 +493,21 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     assert "Candle A" in text_item.brief_text
     assert "20% off this week" in text_item.brief_text
 
-    # Candle A has a synced photo (see _seed_two_products) — its image item
-    # should get an edit-style prompt and carry the reference URL forward,
-    # not re-describe the product from scratch.
-    with_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[0].id and p.plan_item.content_type == "image")
-    assert with_reference.prepared.reference_image_url == "https://example.com/candle-a.jpg"
-    assert with_reference.plan_item.brief_text == (
+    # Image plan items are bare "pending" rows — no ContentItem/GenerationJob
+    # yet, just a preview brief_text for Quick Start's review step.
+    with_reference = next(i for i in items if i.product_id == products[0].id and i.content_type == "image")
+    assert with_reference.status == "pending"
+    assert with_reference.content_item_id is None
+    assert with_reference.generation_job_id is None
+    assert with_reference.brief_text == (
         "Keep the product exactly as shown. Restyle the background to a scene that evokes "
         "'Candle A': 20% off this week"
     )
 
     # Candle B has no synced photo — falls back to today's text-to-image behavior.
-    without_reference = next(p for p in result.prepared_items if p.plan_item.product_id == products[1].id and p.plan_item.content_type == "image")
-    assert without_reference.prepared.reference_image_url is None
-    assert without_reference.plan_item.brief_text == "Candle B. 20% off this week"
+    without_reference = next(i for i in items if i.product_id == products[1].id and i.content_type == "image")
+    assert without_reference.status == "pending"
+    assert without_reference.brief_text == "Candle B. 20% off this week"
 
 
 async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
@@ -613,3 +643,165 @@ async def test_bulk_plan_items_text_briefs_include_rejection_feedback_but_image_
     assert "Avoid these previously flagged issues:" in text_item.brief_text
     assert "Avoid using emojis in captions" in text_item.brief_text
     assert "Avoid using emojis in captions" not in image_item.brief_text
+
+
+async def _dispatch_text_item_to_awaiting_review(db_session: AsyncSession, ctx: dict, result) -> object:
+    """Mirrors what commerce.py's bulk-campaign API endpoint (Phase A-C)
+    does for the text item — build_bulk_plan_items() itself only creates
+    the ContentItem, not the GenerationJob/dispatch, since starting
+    workflows needs to happen outside the service layer."""
+    creation_repo = CreationRepository(db_session)
+    marketing_repo = MarketingRepository(db_session)
+    text_prepared = result.prepared_items[0]
+    text_job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        content_item_id=text_prepared.prepared.content_item_id, recipe_id=text_prepared.prepared.recipe_id,
+        requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+        brief_text=text_prepared.prepared.brief_text,
+    )
+    await marketing_repo.link_plan_item_generation(
+        text_prepared.plan_item, content_item_id=text_prepared.prepared.content_item_id, generation_job_id=text_job.id
+    )
+    await creation_repo.update_job_status(text_job, "awaiting_review")
+    await creation_repo.set_job_workflow_id(text_job, f"generation-{text_job.id}")
+    await db_session.commit()
+    return text_job
+
+
+def _context(ctx: dict) -> WorkspaceContext:
+    return WorkspaceContext(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        subscription_id=ctx["subscription_id"], role_permissions=[],
+    )
+
+
+async def test_approving_text_dispatches_paired_pending_image_with_current_photo(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]  # has a synced photo, see _seed_two_products
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+    text_job = await _dispatch_text_item_to_awaiting_review(db_session, ctx, result)
+
+    marketing_repo = MarketingRepository(db_session)
+    items_before = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    image_item_before = next(i for i in items_before if i.content_type == "image")
+    assert image_item_before.status == "pending"
+    assert image_item_before.generation_job_id is None
+
+    user = await db_session.get(User, ctx["user_id"])
+    temporal = _FakeTemporalClient()
+    await review_generation_job(
+        job_id=text_job.id, body=ReviewRequest(decision="approved", revision_id=uuid.uuid4(), comment=None),
+        current_user=user, context=_context(ctx), session=db_session, temporal=temporal,
+    )
+
+    creation_repo = CreationRepository(db_session)
+    items_after = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    image_item_after = next(i for i in items_after if i.content_type == "image")
+    assert image_item_after.status == "generating"
+    assert image_item_after.generation_job_id is not None
+
+    image_job = await creation_repo.get_generation_job_by_id(image_item_after.generation_job_id)
+    assert image_job.reference_image_url == "https://example.com/candle-a.jpg"
+    assert len(temporal.started) == 1
+
+
+async def test_approving_text_uses_product_photo_synced_after_campaign_created(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_b = products[1]  # no synced photo at seed time, see _seed_two_products
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_b.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    # A photo gets synced for this product *after* the campaign was already
+    # built — the exact scenario this whole change exists to fix.
+    commerce_repo = CommerceRepository(db_session)
+    await commerce_repo.upsert_asset(
+        product_id=candle_b.id, external_asset_id="candle-b-image-0",
+        url="https://example.com/candle-b-new.jpg", position=0,
+    )
+    await db_session.commit()
+
+    text_job = await _dispatch_text_item_to_awaiting_review(db_session, ctx, result)
+
+    user = await db_session.get(User, ctx["user_id"])
+    temporal = _FakeTemporalClient()
+    await review_generation_job(
+        job_id=text_job.id, body=ReviewRequest(decision="approved", revision_id=uuid.uuid4(), comment=None),
+        current_user=user, context=_context(ctx), session=db_session, temporal=temporal,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    creation_repo = CreationRepository(db_session)
+    items_after = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    image_item_after = next(i for i in items_after if i.content_type == "image")
+    image_job = await creation_repo.get_generation_job_by_id(image_item_after.generation_job_id)
+
+    assert image_job.reference_image_url == "https://example.com/candle-b-new.jpg"
+    # The final brief reflects the edit-style prompt now that a photo
+    # exists, not the plain text-to-image prompt stored as a preview when
+    # the campaign was first built (no photo yet at that point).
+    assert image_job.brief_text.startswith("Keep the product exactly as shown.")
+    assert image_item_after.brief_text == image_job.brief_text
+
+
+async def test_manual_start_blocks_image_until_text_approved_then_uses_fresh_photo(db_session: AsyncSession) -> None:
+    from fastapi import HTTPException
+
+    from content_studio.api.v1.marketing import start_plan_item
+
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    image_item = next(i for i in items if i.content_type == "image")
+
+    user = await db_session.get(User, ctx["user_id"])
+    temporal = _FakeTemporalClient()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await start_plan_item(
+            campaign_id=result.campaign_id, item_id=image_item.id, current_user=user, context=_context(ctx),
+            session=db_session, temporal=temporal,
+        )
+    assert exc_info.value.status_code == 409
+
+    creation_repo = CreationRepository(db_session)
+    text_prepared = result.prepared_items[0]
+    text_job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        content_item_id=text_prepared.prepared.content_item_id, recipe_id=text_prepared.prepared.recipe_id,
+        requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+        brief_text=text_prepared.prepared.brief_text,
+    )
+    await marketing_repo.link_plan_item_generation(
+        text_prepared.plan_item, content_item_id=text_prepared.prepared.content_item_id, generation_job_id=text_job.id
+    )
+    await creation_repo.update_job_status(text_job, "approved")
+    await db_session.commit()
+
+    result_start = await start_plan_item(
+        campaign_id=result.campaign_id, item_id=image_item.id, current_user=user, context=_context(ctx),
+        session=db_session, temporal=temporal,
+    )
+    assert result_start["status"] == "started"
+
+    refreshed_image_item = await marketing_repo.get_plan_item_by_id(image_item.id)
+    image_job = await creation_repo.get_generation_job_by_id(refreshed_image_item.generation_job_id)
+    assert image_job.reference_image_url == "https://example.com/candle-a.jpg"

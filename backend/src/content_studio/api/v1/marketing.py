@@ -13,6 +13,7 @@ from content_studio.api.deps import (
     get_workspace_context,
 )
 from content_studio.config import get_settings
+from content_studio.modules.commerce.service import prepare_paired_image_generation
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.identity.models import User
 from content_studio.modules.marketing.exceptions import MarketingError
@@ -163,6 +164,7 @@ async def start_plan_item(
     Create Content page uses — a campaign just orchestrates existing
     infrastructure, it doesn't reimplement it."""
     marketing_repo = MarketingRepository(session)
+    creation_repo = CreationRepository(session)
     campaign = await marketing_repo.get_campaign_by_id(campaign_id)
     if campaign is None or campaign.workspace_id != context.workspace_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
@@ -172,10 +174,30 @@ async def start_plan_item(
     if plan_item.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, f"Item is not pending (status={plan_item.status})")
 
-    service = MarketingService(session)
-    prepared = await service.prepare_item_generation(plan_item)
+    if plan_item.content_type == "image" and plan_item.product_id is not None:
+        # Bulk product-campaign image items are gated behind their paired
+        # text item's approval — see prepare_paired_image_generation()'s
+        # docstring for why (a real product photo, resolved fresh, not
+        # whatever was known when the campaign was first built).
+        siblings = await marketing_repo.list_plan_items_for_campaign(campaign_id)
+        text_sibling = next(
+            (i for i in siblings if i.product_id == plan_item.product_id and i.content_type == "text"), None
+        )
+        text_job = (
+            await creation_repo.get_generation_job_by_id(text_sibling.generation_job_id)
+            if text_sibling is not None and text_sibling.generation_job_id is not None
+            else None
+        )
+        if text_job is None or text_job.status != "approved":
+            raise HTTPException(status.HTTP_409_CONFLICT, "This image can't start until its text is approved")
+        prepared = await prepare_paired_image_generation(session, plan_item)
+        if prepared is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Couldn't prepare this image (missing product or recipe)"
+            )
+    else:
+        prepared = await MarketingService(session).prepare_item_generation(plan_item)
 
-    creation_repo = CreationRepository(session)
     job = await creation_repo.create_generation_job(
         organization_id=context.organization_id,
         workspace_id=context.workspace_id,
@@ -184,6 +206,7 @@ async def start_plan_item(
         requested_by_user_id=current_user.id,
         subscription_id=context.subscription_id,
         brief_text=prepared.brief_text,
+        reference_image_url=prepared.reference_image_url,
     )
     await session.commit()
 
@@ -198,6 +221,7 @@ async def start_plan_item(
     await creation_repo.set_job_workflow_id(job, workflow_id)
     await marketing_repo.link_plan_item_generation(plan_item, content_item_id=prepared.content_item_id, generation_job_id=job.id)
     await marketing_repo.update_plan_item_status(plan_item, "generating")
+    await marketing_repo.update_plan_item_brief_text(plan_item, prepared.brief_text)
     await session.commit()
 
     return {"status": "started", "job_id": str(job.id)}

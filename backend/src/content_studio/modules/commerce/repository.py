@@ -196,6 +196,14 @@ class CommerceRepository:
             select(Product)
             .where(Product.id == product_id)
             .options(selectinload(Product.variants), selectinload(Product.assets))
+            # populate_existing — without it, a Product already in this
+            # session's identity map (e.g. loaded earlier when a bulk
+            # campaign was built) keeps its already-loaded `.assets`
+            # collection as-is; selectinload alone doesn't re-populate an
+            # already-loaded relationship. Callers relying on this method
+            # for "the product's *current* state" (prepare_paired_image_generation,
+            # in particular) need every call to actually hit the DB.
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { ApiError } from "@/lib/api-client";
 import { RevisionPreview } from "@/components/revision-preview";
 import { SelectableList } from "@/components/selectable-list";
 import { api, type CampaignPlanItemOut } from "@/lib/api";
@@ -267,6 +268,7 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
   const [removingItemId, setRemovingItemId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [refreshingPhotos, setRefreshingPhotos] = useState(false);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -280,10 +282,25 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
       await api.startPlanItem(campaignId, itemId);
       toast.success("Started");
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
-    } catch {
-      toast.error("Couldn't start this item.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't start this item.");
     } finally {
       setStartingItemId(null);
+    }
+  };
+
+  const handleRefreshPhotos = async () => {
+    setRefreshingPhotos(true);
+    try {
+      const stores = await api.listStores();
+      await Promise.all(stores.map((s) => api.syncStoreProducts(s.connection.id)));
+      toast.success("Product photos refreshed from the store");
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+      await queryClient.invalidateQueries({ queryKey: ["commerce", "products"] });
+    } catch {
+      toast.error("Couldn't refresh product photos.");
+    } finally {
+      setRefreshingPhotos(false);
     }
   };
 
@@ -328,10 +345,20 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">{detail.campaign.name}</CardTitle>
-          <CardDescription>
-            Status: {detail.campaign.status} &middot; Spent: {Number(detail.campaign.total_spent).toFixed(2)} credits
-          </CardDescription>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <CardTitle className="text-base">{detail.campaign.name}</CardTitle>
+              <CardDescription>
+                Status: {detail.campaign.status} &middot; Spent: {Number(detail.campaign.total_spent).toFixed(2)}{" "}
+                credits
+              </CardDescription>
+            </div>
+            {detail.plan_items.some((i) => i.product_id) && (
+              <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
+                {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <ul className="space-y-2">

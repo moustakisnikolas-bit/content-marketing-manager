@@ -75,6 +75,7 @@ class ProductAssetOut(BaseModel):
 
 class ProductOut(BaseModel):
     id: uuid.UUID
+    store_connection_id: uuid.UUID
     title: str
     description: str
     price: Decimal | None

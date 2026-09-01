@@ -313,6 +313,7 @@ export interface SyncProductsResponse {
 
 export interface ProductOut {
   id: string;
+  store_connection_id: string;
   title: string;
   description: string;
   price: string | null;

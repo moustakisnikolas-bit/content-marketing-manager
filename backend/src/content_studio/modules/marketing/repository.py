@@ -197,6 +197,10 @@ class MarketingRepository:
         item.status = status
         await self._session.flush()
 
+    async def update_plan_item_brief_text(self, item: CampaignPlanItem, brief_text: str) -> None:
+        item.brief_text = brief_text
+        await self._session.flush()
+
     async def set_plan_item_connection(self, item: CampaignPlanItem, connection_id: uuid.UUID) -> None:
         item.platform_connection_id = connection_id
         await self._session.flush()

@@ -11,6 +11,8 @@ from content_studio.api.deps import (
     get_workspace_context,
 )
 from content_studio.config import get_settings
+from content_studio.modules.commerce.service import prepare_paired_image_generation
+from content_studio.modules.creation.models import GenerationJob
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.creation.schemas import (
     ContentItemDetailOut,
@@ -32,6 +34,110 @@ router = APIRouter(prefix="/content", tags=["content"])
 
 async def get_temporal_client_dep() -> Client:
     return await get_temporal_client()
+
+
+async def _dispatch_generation_job(
+    *,
+    repo: CreationRepository,
+    session: AsyncSession,
+    temporal: Client,
+    organization_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    content_item_id: uuid.UUID,
+    recipe_id: uuid.UUID,
+    requested_by_user_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    brief_text: str,
+    reference_image_url: str | None = None,
+) -> GenerationJob:
+    """Creates a GenerationJob and starts its GenerationWorkflow — the
+    create-then-dispatch sequence shared by create_brief(), the
+    reject-and-regenerate branch, and the auto-dispatch-paired-image branch
+    of review_generation_job() below. Two commits: the job row must exist
+    before Temporal can be told its id, and the workflow id must be
+    persisted once Temporal accepts the start."""
+    job = await repo.create_generation_job(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        content_item_id=content_item_id,
+        recipe_id=recipe_id,
+        requested_by_user_id=requested_by_user_id,
+        subscription_id=subscription_id,
+        brief_text=brief_text,
+        reference_image_url=reference_image_url,
+    )
+    await session.commit()
+
+    settings = get_settings()
+    workflow_id = f"generation-{job.id}"
+    await temporal.start_workflow(
+        GenerationWorkflow.run,
+        GenerationWorkflowInput(job_id=str(job.id)),
+        id=workflow_id,
+        task_queue=settings.temporal_task_queue,
+    )
+    await repo.set_job_workflow_id(job, workflow_id)
+    await session.commit()
+    return job
+
+
+async def _maybe_dispatch_paired_image(
+    job: GenerationJob, current_user: User, session: AsyncSession, temporal: Client
+) -> None:
+    """When an approved job is the TEXT half of a bulk product-campaign
+    pair, dispatches its paired IMAGE plan item now instead of it having
+    started immediately alongside the text (that used to happen, and
+    produced images before anyone had approved the caption they went
+    with). See prepare_paired_image_generation()'s docstring for why the
+    product photo is re-resolved fresh here rather than reusing whatever
+    was known at campaign-creation time. Best-effort: any failure here
+    must never break the text approval itself — the image item is simply
+    left "pending" for a manual retry."""
+    try:
+        marketing_repo = MarketingRepository(session)
+        text_plan_item = await marketing_repo.get_plan_item_by_generation_job_id(job.id)
+        if text_plan_item is None or text_plan_item.content_type != "text" or text_plan_item.product_id is None:
+            return
+        siblings = await marketing_repo.list_plan_items_for_campaign(text_plan_item.campaign_id)
+        image_item = next(
+            (
+                i
+                for i in siblings
+                if i.product_id == text_plan_item.product_id
+                and i.content_type == "image"
+                and i.status == "pending"
+            ),
+            None,
+        )
+        if image_item is None:
+            return
+
+        prepared = await prepare_paired_image_generation(session, image_item)
+        if prepared is None:
+            return
+
+        repo = CreationRepository(session)
+        new_job = await _dispatch_generation_job(
+            repo=repo,
+            session=session,
+            temporal=temporal,
+            organization_id=job.organization_id,
+            workspace_id=job.workspace_id,
+            content_item_id=prepared.content_item_id,
+            recipe_id=prepared.recipe_id,
+            requested_by_user_id=current_user.id,
+            subscription_id=job.subscription_id,
+            brief_text=prepared.brief_text,
+            reference_image_url=prepared.reference_image_url,
+        )
+        await marketing_repo.link_plan_item_generation(
+            image_item, content_item_id=prepared.content_item_id, generation_job_id=new_job.id
+        )
+        await marketing_repo.update_plan_item_status(image_item, "generating")
+        await marketing_repo.update_plan_item_brief_text(image_item, prepared.brief_text)
+        await session.commit()
+    except Exception:  # noqa: BLE001, S110 — must never break the text-approval response itself
+        pass
 
 
 @router.post("/briefs", response_model=CreateBriefResponse, status_code=status.HTTP_201_CREATED)
@@ -58,7 +164,10 @@ async def create_brief(
         title=body.title,
         brand_profile_id=body.brand_profile_id,
     )
-    job = await repo.create_generation_job(
+    job = await _dispatch_generation_job(
+        repo=repo,
+        session=session,
+        temporal=temporal,
         organization_id=context.organization_id,
         workspace_id=context.workspace_id,
         content_item_id=item.id,
@@ -67,18 +176,6 @@ async def create_brief(
         subscription_id=context.subscription_id,
         brief_text=body.brief_text,
     )
-    await session.commit()
-
-    settings = get_settings()
-    workflow_id = f"generation-{job.id}"
-    await temporal.start_workflow(
-        GenerationWorkflow.run,
-        GenerationWorkflowInput(job_id=str(job.id)),
-        id=workflow_id,
-        task_queue=settings.temporal_task_queue,
-    )
-    await repo.set_job_workflow_id(job, workflow_id)
-    await session.commit()
 
     return CreateBriefResponse(content_item_id=item.id, job_id=job.id)
 
@@ -160,11 +257,15 @@ async def review_generation_job(
         args=[body.decision, str(current_user.id), body.comment],
     )
 
-    if body.decision != "rejected":
+    if body.decision == "approved":
+        await _maybe_dispatch_paired_image(job, current_user, session, temporal)
         return {"status": "signal_sent", "new_job_id": None}
 
     new_brief_text = f"{job.brief_text}\n\nRevision requested: {body.comment}" if body.comment else job.brief_text
-    new_job = await repo.create_generation_job(
+    new_job = await _dispatch_generation_job(
+        repo=repo,
+        session=session,
+        temporal=temporal,
         organization_id=job.organization_id,
         workspace_id=job.workspace_id,
         content_item_id=job.content_item_id,
@@ -174,18 +275,6 @@ async def review_generation_job(
         brief_text=new_brief_text,
         reference_image_url=job.reference_image_url,
     )
-    await session.commit()
-
-    settings = get_settings()
-    new_workflow_id = f"generation-{new_job.id}"
-    await temporal.start_workflow(
-        GenerationWorkflow.run,
-        GenerationWorkflowInput(job_id=str(new_job.id)),
-        id=new_workflow_id,
-        task_queue=settings.temporal_task_queue,
-    )
-    await repo.set_job_workflow_id(new_job, new_workflow_id)
-    await session.commit()
 
     marketing_repo = MarketingRepository(session)
     plan_item = await marketing_repo.get_plan_item_by_generation_job_id(job_id)
