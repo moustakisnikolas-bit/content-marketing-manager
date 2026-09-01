@@ -149,12 +149,24 @@ services:
   seaweedfs:
     image: chrislusf/seaweedfs:latest
     command: ["server", "-s3", "-s3.port=8333", "-dir=/data", "-master.volumeSizeLimitMB=1024"]
-    # A published port (not just `expose:`) is what Coolify's Traefik
-    # auto-port-detection actually keys off, same as backend/frontend below —
-    # confirmed needed after docker_compose_domains routing 502'd with no
-    # loadbalancer.server.port label until this was added.
-    ports:
-      - "8333:8333"
+    expose:
+      - "8333"
+    # Manual Traefik labels, not Coolify's docker_compose_domains UI/API —
+    # Coolify's own label-generation reads EXPOSE from the image, and this
+    # image doesn't declare one (the s3 gateway port is only known via the
+    # -s3.port command flag), so it never emits the required
+    # loadbalancer.server.port label and every request 502s. The app UUID
+    # below is this specific Coolify application's docker network name —
+    # matches CS_OBJECT_STORAGE_PUBLIC_ENDPOINT in this same file.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=ng0w75q8muzknqpgaz3dvj6s"
+      - "traefik.http.routers.seaweedfs-assets.rule=Host(`assets-ng0w75q8muzknqpgaz3dvj6s.169.58.234.8.sslip.io`)"
+      - "traefik.http.routers.seaweedfs-assets.entrypoints=https"
+      - "traefik.http.routers.seaweedfs-assets.tls=true"
+      - "traefik.http.routers.seaweedfs-assets.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.seaweedfs-assets.service=seaweedfs-assets-svc"
+      - "traefik.http.services.seaweedfs-assets-svc.loadbalancer.server.port=8333"
     volumes:
       - seaweedfs_data:/data
 
