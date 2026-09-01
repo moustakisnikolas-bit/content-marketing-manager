@@ -151,6 +151,29 @@ async def get_campaign(
     )
 
 
+@router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignOut)
+async def cancel_campaign(
+    campaign_id: uuid.UUID,
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> CampaignOut:
+    """Soft-removes a campaign by reusing the existing "cancelled" status
+    (already a valid CAMPAIGN_STATUSES value) rather than deleting rows —
+    same reasoning as remove_plan_item() below: already-spent generation
+    cost and history stay in the audit trail. Cancelled campaigns are
+    filtered out of the default list on the frontend, not deleted."""
+    repo = MarketingRepository(session)
+    campaign = await repo.get_campaign_by_id(campaign_id)
+    if campaign is None or campaign.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
+    if campaign.status == "cancelled":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Campaign is already cancelled")
+
+    await repo.update_campaign_status(campaign, "cancelled")
+    await session.commit()
+    return CampaignOut.model_validate(campaign)
+
+
 @router.post("/campaigns/{campaign_id}/items/{item_id}/start", status_code=status.HTTP_202_ACCEPTED)
 async def start_plan_item(
     campaign_id: uuid.UUID,

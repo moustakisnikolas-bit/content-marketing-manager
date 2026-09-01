@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { toast } from "sonner";
@@ -263,12 +264,13 @@ function PlanItemReviewPanel({
   );
 }
 
-function CampaignDetail({ campaignId }: { campaignId: string }) {
+function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCancelled: () => void }) {
   const queryClient = useQueryClient();
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
   const [removingItemId, setRemovingItemId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [refreshingPhotos, setRefreshingPhotos] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -301,6 +303,23 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
       toast.error("Couldn't refresh product photos.");
     } finally {
       setRefreshingPhotos(false);
+    }
+  };
+
+  const handleCancelCampaign = async () => {
+    if (!window.confirm("Remove this campaign? Its content and history stay recorded, but it's taken off your list.")) {
+      return;
+    }
+    setCancelling(true);
+    try {
+      await api.cancelCampaign(campaignId);
+      toast.success("Campaign removed");
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaigns"] });
+      onCancelled();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't remove this campaign.");
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -353,11 +372,16 @@ function CampaignDetail({ campaignId }: { campaignId: string }) {
                 credits
               </CardDescription>
             </div>
-            {detail.plan_items.some((i) => i.product_id) && (
-              <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
-                {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
+            <div className="flex gap-2">
+              {detail.plan_items.some((i) => i.product_id) && (
+                <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
+                  {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" disabled={cancelling} onClick={handleCancelCampaign}>
+                {cancelling ? "Removing..." : "Remove campaign"}
               </Button>
-            )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -461,11 +485,18 @@ function CampaignsPageInner() {
 
   const { data: campaigns } = useQuery({ queryKey: ["marketing", "campaigns"], queryFn: api.listCampaigns });
 
+  const visibleCampaigns = (campaigns ?? []).filter((c) => c.status !== "cancelled");
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Campaigns</h1>
-        <p className="text-muted-foreground">Everything you&apos;ve planned with the AI Marketing Manager.</p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold">Campaigns</h1>
+          <p className="text-muted-foreground">Everything you&apos;ve planned with the AI Marketing Manager.</p>
+        </div>
+        <Button render={<Link href="/quick-start" />} nativeButton={false}>
+          New campaign
+        </Button>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
@@ -475,7 +506,7 @@ function CampaignsPageInner() {
           </CardHeader>
           <CardContent>
             <SelectableList
-              items={(campaigns ?? []).map((c) => ({ id: c.id, primary: c.name, secondary: c.status }))}
+              items={visibleCampaigns.map((c) => ({ id: c.id, primary: c.name, secondary: c.status }))}
               selectedId={selectedId}
               onSelect={setSelectedId}
               emptyMessage="No campaigns yet."
@@ -484,7 +515,7 @@ function CampaignsPageInner() {
         </Card>
 
         {selectedId ? (
-          <CampaignDetail campaignId={selectedId} />
+          <CampaignDetail campaignId={selectedId} onCancelled={() => setSelectedId(null)} />
         ) : (
           <Card>
             <CardContent className="pt-6">

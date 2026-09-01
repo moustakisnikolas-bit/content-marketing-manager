@@ -566,6 +566,8 @@ export const api = {
 
   listCampaigns: () => apiClient.get<CampaignOut[]>("/marketing/campaigns"),
 
+  cancelCampaign: (campaignId: string) => apiClient.post<CampaignOut>(`/marketing/campaigns/${campaignId}/cancel`),
+
   getCampaign: (campaignId: string) => apiClient.get<CampaignDetailOut>(`/marketing/campaigns/${campaignId}`),
 
   startPlanItem: (campaignId: string, itemId: string) =>

@@ -5,6 +5,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.adapters.policy.opa import OPAPolicyAdapter
+from content_studio.api.deps import WorkspaceContext
+from content_studio.api.v1.marketing import cancel_campaign
 from content_studio.config import get_settings
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
@@ -109,6 +111,34 @@ async def test_approve_proposal_creates_campaign_and_plan_items(db_session: Asyn
     decisions = await repo.list_decisions_for_campaign(campaign.id)
     assert len(decisions) == 1
     assert decisions[0].decision_type == "proposal_generated"
+
+
+async def test_cancel_campaign_marks_it_cancelled_and_is_idempotent_guarded(db_session: AsyncSession) -> None:
+    from fastapi import HTTPException
+
+    ctx = await _seed_workspace(db_session)
+    service = MarketingService(db_session)
+    brief = await service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        goal_slug=ctx["goal_slug"], what_to_promote="a campaign to remove", mode="guided", target_platforms=[],
+    )
+    proposal = await service.generate_proposal(brief.id)
+    campaign = await service.approve_proposal(proposal_id=proposal.id, user_id=ctx["user_id"], campaign_name="Removable")
+
+    context = WorkspaceContext(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        subscription_id=ctx["subscription_id"], role_permissions=[],
+    )
+    result = await cancel_campaign(campaign_id=campaign.id, context=context, session=db_session)
+    assert result.status == "cancelled"
+
+    repo = MarketingRepository(db_session)
+    refreshed = await repo.get_campaign_by_id(campaign.id)
+    assert refreshed.status == "cancelled"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await cancel_campaign(campaign_id=campaign.id, context=context, session=db_session)
+    assert exc_info.value.status_code == 409
 
 
 def _autopilot_service(session, *, policy=None, ai_text=None, platform_adapter=None, secrets=None) -> AutoPilotService:
