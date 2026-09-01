@@ -11,7 +11,7 @@ from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.commerce.exceptions import ConsentRequired
 from content_studio.modules.commerce.repository import CommerceRepository
-from content_studio.modules.commerce.service import CommerceService
+from content_studio.modules.commerce.service import CommerceService, _strip_product_size
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.creation.schemas import ReviewRequest
@@ -805,3 +805,63 @@ async def test_manual_start_blocks_image_until_text_approved_then_uses_fresh_pho
     refreshed_image_item = await marketing_repo.get_plan_item_by_id(image_item.id)
     image_job = await creation_repo.get_generation_job_by_id(refreshed_image_item.generation_job_id)
     assert image_job.reference_image_url == "https://example.com/candle-a.jpg"
+
+
+async def test_strip_product_size_removes_weight_suffix() -> None:
+    assert _strip_product_size('Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας 200γρ.') == (
+        'Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας'
+    )
+    assert _strip_product_size("BAMBOO | Wax Melts Κύβοι 70γρ") == "BAMBOO | Wax Melts Κύβοι"
+    assert _strip_product_size("Whiskey Caramel Κερί Σόγιας 60γρ") == "Whiskey Caramel Κερί Σόγιας"
+    # No weight suffix present — left unchanged.
+    assert _strip_product_size("WOODLAND | Wax Melts Κύβοι") == "WOODLAND | Wax Melts Κύβοι"
+
+
+async def test_bulk_plan_items_briefs_strip_product_weight_suffix(db_session: AsyncSession) -> None:
+    from content_studio.ports.store_connector import ProductData, ProductPage
+
+    ctx = await _seed_workspace(db_session)
+    secrets = FakeSecrets()
+    pages = [
+        ProductPage(
+            products=[
+                ProductData(
+                    external_product_id="p1", title="Mistral Χειροποίητο Κερί Σόγιας 200γρ.", description="d1",
+                    price="10.00", currency="USD", status="active", raw_payload={},
+                    image_urls=["https://example.com/mistral.jpg"],
+                ),
+            ],
+            next_cursor=None,
+        ),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="woocommerce", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+    creation_repo = CreationRepository(db_session)
+    await creation_repo.create_recipe(
+        name=f"image-recipe-{uuid.uuid4().hex[:8]}", content_type="image", provider="replicate", model="test-model",
+        estimated_cost=Decimal("2.0"),
+    )
+    await db_session.commit()
+
+    repo = CommerceRepository(db_session)
+    product = (await repo.list_products_for_connection(connection.id))[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[product.id], description="new arrivals", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "200γρ" not in text_item.brief_text
+    assert "200γρ" not in image_item.brief_text
+    assert "Mistral" in text_item.brief_text

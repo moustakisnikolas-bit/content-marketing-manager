@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -341,7 +342,7 @@ class CommerceService:
         target_platforms: list[str],
     ) -> CampaignProposal:
         product = await self._get_workspace_product(product_id, workspace_id)
-        what_to_promote = f"{product.title} - {product.description}".strip(" -")
+        what_to_promote = f"{_strip_product_size(product.title)} - {product.description}".strip(" -")
 
         marketing_service = MarketingService(self._session)
         brief = await marketing_service.create_brief(
@@ -434,8 +435,9 @@ class CommerceService:
                 continue
 
             sequence_number += 1
+            content_title = _strip_product_size(product.title)
             text_brief = _build_text_brief(
-                product_title=product.title, product_line_description=product_line_description,
+                product_title=content_title, product_line_description=product_line_description,
                 campaign_description=description, recent_captions=recent_captions,
                 recent_rejection_feedback=recent_rejection_feedback,
             )
@@ -462,7 +464,7 @@ class CommerceService:
                     min(product.assets, key=lambda a: a.position).url if product.assets else None
                 )
                 image_brief = _build_image_edit_prompt(
-                    product_title=product.title, campaign_description=description,
+                    product_title=content_title, campaign_description=description,
                     has_reference_image=reference_image_url is not None,
                 )
                 await marketing_repo.create_plan_item(
@@ -513,7 +515,7 @@ class CommerceService:
             raise ConsentRequired("Cannot generate abandoned-cart content without confirmed customer consent")
 
         product = await self._get_workspace_product(product_id, workspace_id)
-        what_to_promote = f"Remind the customer about {product.title}, which they left in their cart."
+        what_to_promote = f"Remind the customer about {_strip_product_size(product.title)}, which they left in their cart."
 
         marketing_service = MarketingService(self._session)
         brief = await marketing_service.create_brief(
@@ -567,6 +569,16 @@ def _to_decimal(value: str | None) -> Decimal | None:
     if value is None:
         return None
     return Decimal(value)
+
+
+# Store product titles carry a weight suffix (e.g. "200γρ.") that's useful
+# on the store listing but reads as clutter in a caption or image prompt —
+# stripped before either goes into a generation brief.
+_PRODUCT_SIZE_PATTERN = re.compile(r"\s*\d+\s?γρ\.?", re.IGNORECASE)
+
+
+def _strip_product_size(title: str) -> str:
+    return _PRODUCT_SIZE_PATTERN.sub("", title).strip().rstrip(".,-").strip()
 
 
 def _build_text_brief(
@@ -641,7 +653,7 @@ async def prepare_paired_image_generation(
 
     reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
     image_brief = _build_image_edit_prompt(
-        product_title=product.title, campaign_description=campaign_description,
+        product_title=_strip_product_size(product.title), campaign_description=campaign_description,
         has_reference_image=reference_image_url is not None,
     )
 
