@@ -12,5 +12,7 @@ class StubAIImageAdapter:
     see StubAITextAdapter's docstring for why this is separate from the
     tests/fakes equivalent."""
 
-    async def generate_image(self, *, prompt: str, model: str, params: dict) -> bytes:
+    async def generate_image(
+        self, *, prompt: str, model: str, params: dict, reference_image_url: str | None = None
+    ) -> bytes:
         return base64.b64decode(_TINY_PNG_B64)
