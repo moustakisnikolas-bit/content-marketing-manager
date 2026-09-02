@@ -33,7 +33,7 @@ from content_studio.modules.marketing.schemas import (
     MarketingGoalOut,
 )
 from content_studio.modules.marketing.service import MarketingService
-from content_studio.workflows.autopilot import AutoPilotCampaignWorkflow, AutoPilotWorkflowInput
+from content_studio.workflows.autopilot import AutoPilotCampaignWorkflow
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
@@ -325,31 +325,19 @@ async def start_autopilot(
     session: AsyncSession = Depends(get_db_session),
     temporal: Client = Depends(get_temporal_client_dep),
 ) -> dict[str, str]:
-    repo = MarketingRepository(session)
-    campaign = await repo.get_campaign_by_id(campaign_id)
-    if campaign is None or campaign.workspace_id != context.workspace_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
-    policy = await repo.get_autopilot_policy_for_campaign(campaign_id)
-    if policy is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Configure an Auto-Pilot policy before starting")
-
-    items = await repo.list_plan_items_for_campaign(campaign_id)
-    pending_item_ids = [str(i.id) for i in items if i.status == "pending"]
-    if not pending_item_ids:
-        raise HTTPException(status.HTTP_409_CONFLICT, "No pending items to run")
-
-    settings = get_settings()
-    workflow_id = f"autopilot-{campaign_id}"
-    await temporal.start_workflow(
-        AutoPilotCampaignWorkflow.run,
-        AutoPilotWorkflowInput(campaign_id=str(campaign_id), plan_item_ids=pending_item_ids),
-        id=workflow_id,
-        task_queue=settings.temporal_task_queue,
+    # TEMPORARY: Auto-Pilot is disabled workspace-wide. AutoPilotService.run_item()
+    # hardcodes content_type="text" regardless of the plan item's actual
+    # content_type, so an "image" item gets generated and published as a
+    # nonsense text post instead of an image — confirmed live, already
+    # published wrong content before this was caught. Remove this block
+    # once run_item() is fixed to branch on plan_item.content_type the
+    # same way the manual/guided dispatch paths already do.
+    raise HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Auto-Pilot is temporarily disabled while a content-type bug is being fixed "
+        "(it was generating and publishing image items as text). Use manual review on "
+        "/campaigns instead for now.",
     )
-    await repo.set_campaign_workflow_id(campaign, workflow_id)
-    await repo.update_campaign_status(campaign, "active")
-    await session.commit()
-    return {"status": "started", "workflow_id": workflow_id}
 
 
 @router.post("/campaigns/{campaign_id}/autopilot/halt", status_code=status.HTTP_202_ACCEPTED)

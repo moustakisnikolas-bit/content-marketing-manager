@@ -27,50 +27,13 @@ const PLAN_ITEM_STATUS_LABELS: Record<string, string> = {
 
 function AutoPilotSection({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient();
-  const [platforms, setPlatforms] = useState("facebook");
-  const [maxSpend, setMaxSpend] = useState("10");
-  const [blockedTopics, setBlockedTopics] = useState("");
-  const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const { data: policy, isError } = useQuery({
+  const { data: policy } = useQuery({
     queryKey: ["marketing", "autopilot-policy", campaignId],
     queryFn: () => api.getAutoPilotPolicy(campaignId),
     retry: false,
   });
-
-  const handleCreatePolicy = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setCreating(true);
-    try {
-      await api.createAutoPilotPolicy(campaignId, {
-        allowed_platforms: platforms.split(",").map((p) => p.trim()).filter(Boolean),
-        max_total_spend: maxSpend,
-        blocked_topics: blockedTopics.split(",").map((t) => t.trim()).filter(Boolean),
-        posting_window_start_hour: 0,
-        posting_window_end_hour: 23,
-      });
-      toast.success("Auto-Pilot policy set");
-      await queryClient.invalidateQueries({ queryKey: ["marketing", "autopilot-policy", campaignId] });
-    } catch {
-      toast.error("Couldn't save the policy.");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleStart = async () => {
-    setBusy(true);
-    try {
-      await api.startAutoPilot(campaignId);
-      toast.success("Auto-Pilot started");
-      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
-    } catch {
-      toast.error("Couldn't start Auto-Pilot.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const handleHalt = async () => {
     setBusy(true);
@@ -85,70 +48,27 @@ function AutoPilotSection({ campaignId }: { campaignId: string }) {
     }
   };
 
-  if (isError || !policy) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Auto-Pilot</CardTitle>
-          <CardDescription>Set limits before letting Auto-Pilot run this campaign on its own.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="space-y-4" onSubmit={handleCreatePolicy}>
-            <div className="space-y-2">
-              <Label htmlFor="allowed_platforms">Allowed platforms (comma-separated)</Label>
-              <input
-                id="allowed_platforms"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none"
-                value={platforms}
-                onChange={(e) => setPlatforms(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="max_spend">Maximum total spend (credits)</Label>
-              <input
-                id="max_spend"
-                type="number"
-                step="0.01"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none"
-                value={maxSpend}
-                onChange={(e) => setMaxSpend(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="blocked_topics">Blocked topics (comma-separated, optional)</Label>
-              <input
-                id="blocked_topics"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none"
-                value={blockedTopics}
-                onChange={(e) => setBlockedTopics(e.target.value)}
-              />
-            </div>
-            <Button type="submit" disabled={creating}>
-              {creating ? "Saving..." : "Save policy"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    );
-  }
-
+  // TEMPORARY: Auto-Pilot is disabled workspace-wide — it was generating
+  // and publishing image plan items as text posts (AutoPilotService.run_item()
+  // ignores plan_item.content_type). Starting is blocked server-side too;
+  // this just makes the reason visible instead of a raw 500. The kill
+  // switch stays available on an existing policy as a safety action.
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Auto-Pilot</CardTitle>
         <CardDescription>
-          Allowed: {policy.allowed_platforms.join(", ") || "none"} &middot; Limit: {policy.max_total_spend} credits
-          {policy.kill_switch_active && " · Kill switch is ACTIVE"}
+          Temporarily disabled — it was generating and publishing image items as text posts. Use manual review
+          below instead for now.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex gap-2">
-        <Button onClick={handleStart} disabled={busy || policy.kill_switch_active}>
-          Start Auto-Pilot
-        </Button>
-        <Button variant="outline" onClick={handleHalt} disabled={busy || policy.kill_switch_active}>
-          Kill switch
-        </Button>
-      </CardContent>
+      {policy && !policy.kill_switch_active && (
+        <CardContent>
+          <Button variant="outline" onClick={handleHalt} disabled={busy}>
+            Activate kill switch on this campaign&apos;s policy
+          </Button>
+        </CardContent>
+      )}
     </Card>
   );
 }
