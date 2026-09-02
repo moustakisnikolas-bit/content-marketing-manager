@@ -239,7 +239,7 @@ async def test_publish_approved_dry_run_previews_without_side_effects(db_session
 
     preview = await publish_approved(
         campaign_id=seeded["campaign"].id, dry_run=True, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=temporal,
+        session=db_session, temporal=temporal, object_storage=FakeObjectStorage(),
     )
 
     assert preview.dry_run is True
@@ -270,7 +270,7 @@ async def test_publish_approved_dry_run_previews_without_side_effects(db_session
     # Confirming for real afterward still works and uses the same slot logic.
     confirmed = await publish_approved(
         campaign_id=seeded["campaign"].id, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=temporal,
+        session=db_session, temporal=temporal, object_storage=FakeObjectStorage(),
     )
     assert confirmed.dry_run is False
     assert len(confirmed.published) == 1
@@ -284,7 +284,7 @@ async def test_publish_approved_copies_caption_publishes_image_and_creates_story
 
     response = await publish_approved(
         campaign_id=seeded["campaign"].id, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=temporal,
+        session=db_session, temporal=temporal, object_storage=FakeObjectStorage(),
     )
 
     assert response.skipped == []
@@ -321,7 +321,7 @@ async def test_publish_approved_skips_when_no_connected_platform(db_session: Asy
 
     response = await publish_approved(
         campaign_id=seeded["campaign"].id, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=_FakeTemporalClient(),
+        session=db_session, temporal=_FakeTemporalClient(), object_storage=FakeObjectStorage(),
     )
 
     assert response.published == []
@@ -335,7 +335,7 @@ async def test_approving_story_item_creates_and_starts_story_publication_plan(db
 
     publish_response = await publish_approved(
         campaign_id=seeded["campaign"].id, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=_FakeTemporalClient(),
+        session=db_session, temporal=_FakeTemporalClient(), object_storage=FakeObjectStorage(),
     )
     story_plan_item_id = publish_response.published[0].story_plan_item_id
 
@@ -416,7 +416,7 @@ async def test_publish_approved_publishes_one_product_to_each_target_platform_se
 
     response = await publish_approved(
         campaign_id=campaign.id, current_user=ctx["user"], context=_context(ctx),
-        session=db_session, temporal=_FakeTemporalClient(),
+        session=db_session, temporal=_FakeTemporalClient(), object_storage=FakeObjectStorage(),
     )
 
     assert response.skipped == []

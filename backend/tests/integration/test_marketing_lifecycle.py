@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.adapters.policy.opa import OPAPolicyAdapter
 from content_studio.api.deps import WorkspaceContext
-from content_studio.api.v1.marketing import cancel_campaign
+from content_studio.api.v1.marketing import cancel_campaign, remove_plan_item
 from content_studio.config import get_settings
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
@@ -139,6 +139,105 @@ async def test_cancel_campaign_marks_it_cancelled_and_is_idempotent_guarded(db_s
     with pytest.raises(HTTPException) as exc_info:
         await cancel_campaign(campaign_id=campaign.id, context=context, session=db_session)
     assert exc_info.value.status_code == 409
+
+
+async def test_remove_plan_item_hard_deletes_but_keeps_generated_content_and_decisions(
+    db_session: AsyncSession,
+) -> None:
+    ctx = await _seed_workspace(db_session)
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        goal_slug=ctx["goal_slug"], what_to_promote="a campaign to prune", mode="guided", target_platforms=[],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user_id"], campaign_name="Prune Test"
+    )
+
+    repo = MarketingRepository(db_session)
+    plan_item = (await repo.list_plan_items_for_campaign(campaign.id))[0]
+
+    creation_repo = CreationRepository(db_session)
+    recipe = await creation_repo.create_recipe(
+        name=f"recipe-{uuid.uuid4().hex[:8]}", content_type="text", provider="openrouter", model="test-model",
+        estimated_cost=Decimal("0.5"),
+    )
+    content_item = await creation_repo.create_content_item(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        created_by_user_id=ctx["user_id"], content_type="text", title="Keep this content",
+    )
+    job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=content_item.id,
+        recipe_id=recipe.id, requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+        brief_text="n/a",
+    )
+    await repo.link_plan_item_generation(plan_item, content_item_id=content_item.id, generation_job_id=job.id)
+    decision = await repo.create_decision(
+        campaign_id=campaign.id, decision_type="proposal_generated", explanation="kept for history",
+        plan_item_id=plan_item.id,
+    )
+    await db_session.commit()
+
+    context = WorkspaceContext(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        subscription_id=ctx["subscription_id"], role_permissions=[],
+    )
+    result = await remove_plan_item(campaign_id=campaign.id, item_id=plan_item.id, context=context, session=db_session)
+    assert result["status"] == "deleted"
+
+    # The DB applies ON DELETE SET NULL to campaign_decisions.plan_item_id
+    # as part of that DELETE, but SQLAlchemy's identity map doesn't know to
+    # refresh the already-loaded `decision` object's attribute on its own —
+    # only real in production, where every request gets a fresh session
+    # with no stale identity-map objects to worry about. Expiring just this
+    # one object (not expire_all()) avoids also expiring content_item/job,
+    # whose next session.get() would otherwise try a synchronous refresh
+    # and raise MissingGreenlet under the async engine.
+    db_session.expire(decision)
+
+    assert await repo.get_plan_item_by_id(plan_item.id) is None
+
+    # The generated content (including any AI image behind it) and its
+    # generation job are never touched by removing the plan item row.
+    assert await creation_repo.get_content_item_by_id(content_item.id) is not None
+    assert await creation_repo.get_generation_job_by_id(job.id) is not None
+
+    # The decision row survives — only its plan_item_id link is cleared
+    # (ondelete=SET NULL), so "why we did what we did" history isn't lost.
+    decisions = await repo.list_decisions_for_campaign(campaign.id)
+    kept_decision = next(d for d in decisions if d.id == decision.id)
+    assert kept_decision.plan_item_id is None
+    assert kept_decision.explanation == "kept for history"
+
+
+async def test_remove_plan_item_blocks_removing_an_already_published_item(db_session: AsyncSession) -> None:
+    from fastapi import HTTPException
+
+    ctx = await _seed_workspace(db_session)
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        goal_slug=ctx["goal_slug"], what_to_promote="a campaign", mode="guided", target_platforms=[],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user_id"], campaign_name="Published Item Test"
+    )
+    repo = MarketingRepository(db_session)
+    plan_item = (await repo.list_plan_items_for_campaign(campaign.id))[0]
+    await repo.update_plan_item_status(plan_item, "published")
+    await db_session.commit()
+
+    context = WorkspaceContext(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        subscription_id=ctx["subscription_id"], role_permissions=[],
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await remove_plan_item(campaign_id=campaign.id, item_id=plan_item.id, context=context, session=db_session)
+    assert exc_info.value.status_code == 409
+
+    assert await repo.get_plan_item_by_id(plan_item.id) is not None
 
 
 def _autopilot_service(session, *, policy=None, ai_text=None, platform_adapter=None, secrets=None) -> AutoPilotService:
@@ -308,6 +407,14 @@ async def test_effective_plan_item_status_reads_through_stale_generating_items(d
     # projection, not a write, deliberately safe against in-flight
     # Temporal workflow executions.
     assert (await marketing_repo.get_plan_item_by_id(plan_item.id)).status == "generating"
+
+    # Approved surfaces as its own effective status — not left showing
+    # "generating" forever — so the frontend can sink done items to the
+    # bottom of a campaign's item list.
+    await creation_repo.update_job_status(job, "approved")
+    await db_session.commit()
+    statuses = await service.get_effective_plan_item_statuses([plan_item])
+    assert statuses[plan_item.id] == "approved"
 
     # A hard failure maps to "failed".
     await creation_repo.update_job_status(job, "failed", failure_reason="provider error")

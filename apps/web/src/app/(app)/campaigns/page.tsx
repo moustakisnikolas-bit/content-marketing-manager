@@ -3,6 +3,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { Eye, Trash2 } from "lucide-react";
 import { Suspense, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ const PLAN_ITEM_STATUS_LABELS: Record<string, string> = {
   pending: "Not started",
   generating: "Creating...",
   awaiting_review: "Ready for review",
+  approved: "Approved",
   scheduled: "Scheduled",
   published: "Published",
   failed: "Failed",
@@ -289,11 +291,13 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   };
 
   const handleRemoveItem = async (itemId: string) => {
-    if (!window.confirm("Remove this product from the campaign?")) return;
+    if (!window.confirm("Delete this item permanently? This can't be undone — any generated image or text stays saved, it just won't show here anymore.")) {
+      return;
+    }
     setRemovingItemId(itemId);
     try {
       await api.removePlanItem(campaignId, itemId);
-      toast.success("Removed from campaign");
+      toast.success("Deleted");
       if (reviewingId === itemId) setReviewingId(null);
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
     } catch {
@@ -327,6 +331,15 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
 
   const titleForPlanItem = (planItemId: string) =>
     detail.plan_items.find((i) => i.id === planItemId)?.title ?? "Untitled item";
+
+  // Approved (or already-published) items are done — sink them to the
+  // bottom so items that still need attention stay up top. Array.sort is
+  // stable, so relative order within each group is otherwise unchanged.
+  const isDecided = (item: CampaignPlanItemOut) =>
+    item.status === "approved" || item.status === "published" || item.publication_plan_id !== null;
+  const sortedPlanItems = [...detail.plan_items].sort(
+    (a, b) => Number(isDecided(a)) - Number(isDecided(b)),
+  );
 
   return (
     <div className="space-y-6">
@@ -421,7 +434,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
         </CardHeader>
         <CardContent>
           <ul className="space-y-2">
-            {detail.plan_items.map((item) => {
+            {sortedPlanItems.map((item) => {
               const reviewable = item.status === "awaiting_review";
               return (
                 <li
@@ -453,20 +466,35 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
                         Start
                       </Button>
                     )}
+                    {reviewable && (
+                      <Button
+                        size="icon-sm"
+                        variant="outline"
+                        aria-label="Review"
+                        title="Review"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReviewingId(item.id);
+                        }}
+                      >
+                        <Eye />
+                      </Button>
+                    )}
                     {item.status !== "cancelled" && item.status !== "published" && (
                       <Button
-                        size="sm"
-                        variant="ghost"
+                        size="icon-sm"
+                        variant="destructive"
+                        aria-label="Remove"
+                        title="Remove"
                         disabled={removingItemId === item.id}
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRemoveItem(item.id);
                         }}
                       >
-                        Remove
+                        <Trash2 />
                       </Button>
                     )}
-                    {reviewable && <span className="text-xs font-medium text-primary">Review →</span>}
                   </div>
                 </li>
               );

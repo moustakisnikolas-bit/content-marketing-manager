@@ -217,6 +217,17 @@ class MarketingRepository:
         item.platform_connection_id = connection_id
         await self._session.flush()
 
+    async def delete_plan_item(self, item: CampaignPlanItem) -> None:
+        # Every incoming FK to campaign_plan_items.id (CampaignDecision.
+        # plan_item_id, MetricSnapshot.campaign_plan_item_id x2, a
+        # companion story's source_plan_item_id) is ondelete=SET NULL, so
+        # this never cascades into losing audit history or a story's own
+        # row. content_item_id/generation_job_id/publication_plan_id are
+        # outward references only — the generated ContentItem, its Asset
+        # (the actual image), and any PublicationPlan are untouched.
+        await self._session.delete(item)
+        await self._session.flush()
+
     async def link_plan_item_generation(
         self, item: CampaignPlanItem, *, content_item_id: uuid.UUID, generation_job_id: uuid.UUID
     ) -> None:

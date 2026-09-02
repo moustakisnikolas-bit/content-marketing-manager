@@ -9,6 +9,7 @@ from content_studio.api.deps import (
     WorkspaceContext,
     get_current_user,
     get_db_session,
+    get_object_storage,
     get_temporal_client_dep,
     get_workspace_context,
 )
@@ -48,6 +49,7 @@ from content_studio.modules.marketing.schemas import (
 )
 from content_studio.modules.marketing.service import MarketingService
 from content_studio.modules.publishing.repository import PublishingRepository
+from content_studio.ports.object_storage import ObjectStoragePort
 from content_studio.workflows.autopilot import AutoPilotCampaignWorkflow
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
 from content_studio.workflows.publication import PublicationWorkflow, PublicationWorkflowInput
@@ -71,6 +73,26 @@ async def _selected_revision(creation_repo: CreationRepository, content_item_id:
     return await creation_repo.get_revision_by_id(package.selected_revision_id)
 
 
+async def _resolve_generated_image_url(
+    creation_repo: CreationRepository, object_storage: ObjectStoragePort, content_item_id: uuid.UUID | None
+) -> str | None:
+    """A real, fetchable URL for the (already-approved) image a
+    ContentItem generated — used so the Story companion is built from the
+    same finished post image rather than regenerating from scratch off
+    the raw product photo. None if there's no approved image to resolve
+    (falls back to the raw photo at the call site)."""
+    revision = await _selected_revision(creation_repo, content_item_id)
+    if revision is None or revision.asset_id is None:
+        return None
+    asset = await creation_repo.get_asset_by_id(revision.asset_id)
+    if asset is None:
+        return None
+    try:
+        return await object_storage.get_presigned_url(key=asset.storage_key)
+    except Exception:  # noqa: BLE001 — degrade to the raw-photo fallback at the call site, never raise
+        return None
+
+
 async def _maybe_create_companion_story(
     *,
     session: AsyncSession,
@@ -83,6 +105,7 @@ async def _maybe_create_companion_story(
     image_item: CampaignPlanItem,
     caption_text: str | None,
     sequence_number: int,
+    object_storage: ObjectStoragePort,
 ) -> uuid.UUID | None:
     """Auto-generates a Story companion for a product's newly-scheduled
     Instagram post (see publish_approved() below). Dispatched immediately
@@ -99,7 +122,15 @@ async def _maybe_create_companion_story(
         product = await commerce_repo.get_product_with_details_by_id(image_item.product_id)
         if product is None:
             return None
-        reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
+        # The same finished, approved post image — not a fresh AI
+        # regeneration from the raw store photo — so the story visually
+        # matches the post it's a companion to. Falls back to the raw
+        # product photo only if the post's own image can't be resolved.
+        reference_image_url = await _resolve_generated_image_url(
+            creation_repo, object_storage, image_item.content_item_id
+        )
+        if reference_image_url is None:
+            reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
         hook_text = derive_story_hook(caption_text or product.title)
         brief_text = build_story_brief(product, hook_text)
 
@@ -313,6 +344,32 @@ async def start_plan_item(
         )
         if text_job is None or text_job.status != "approved":
             raise HTTPException(status.HTTP_409_CONFLICT, "This image can't start until its text is approved")
+
+        # Same product, different platform, already has a generated image
+        # — reuse it instead of generating a second, necessarily-different
+        # image for the same photo (see _maybe_dispatch_paired_image()'s
+        # matching comment in api/v1/content.py, the normal path this
+        # manual Start is a fallback/retry for).
+        existing_image = next(
+            (
+                i
+                for i in siblings
+                if i.product_id == plan_item.product_id
+                and i.content_type == "image"
+                and i.id != plan_item.id
+                and i.content_item_id is not None
+            ),
+            None,
+        )
+        if existing_image is not None:
+            await marketing_repo.link_plan_item_generation(
+                plan_item, content_item_id=existing_image.content_item_id,
+                generation_job_id=existing_image.generation_job_id,
+            )
+            await marketing_repo.update_plan_item_status(plan_item, "generating")
+            await session.commit()
+            return {"status": "started", "job_id": str(existing_image.generation_job_id)}
+
         prepared = await prepare_paired_image_generation(session, plan_item)
         if prepared is None:
             raise HTTPException(
@@ -357,10 +414,14 @@ async def remove_plan_item(
     context: WorkspaceContext = Depends(get_workspace_context),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, str]:
-    """Soft-removes a product's item from a campaign by reusing the
-    existing "cancelled" status, rather than deleting the row — keeps any
-    already-spent generation cost in the audit trail, same reasoning as
-    every other status transition in this module."""
+    """Hard-deletes the plan item row outright — every FK that references
+    campaign_plan_items.id is ondelete=SET NULL (CampaignDecision.plan_item_id,
+    MetricSnapshot.campaign_plan_item_id, a companion story's
+    source_plan_item_id), so this never cascades into losing audit history
+    or breaking a story's own row. The generated ContentItem/Asset (the
+    actual image/text) is never touched — content_item_id is only an
+    outward reference on this row, so removing an item keeps the content
+    it already generated, it just detaches this campaign's reference to it."""
     repo = MarketingRepository(session)
     campaign = await repo.get_campaign_by_id(campaign_id)
     if campaign is None or campaign.workspace_id != context.workspace_id:
@@ -368,12 +429,12 @@ async def remove_plan_item(
     plan_item = await repo.get_plan_item_by_id(item_id)
     if plan_item is None or plan_item.campaign_id != campaign_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan item not found")
-    if plan_item.status == "cancelled":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Item is already removed")
+    if plan_item.status == "published":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Can't remove an already-published item")
 
-    await repo.update_plan_item_status(plan_item, "cancelled")
+    await repo.delete_plan_item(plan_item)
     await session.commit()
-    return {"status": "cancelled"}
+    return {"status": "deleted"}
 
 
 @router.post("/campaigns/{campaign_id}/publish-approved", response_model=PublishApprovedResponse)
@@ -384,6 +445,7 @@ async def publish_approved(
     context: WorkspaceContext = Depends(get_workspace_context),
     session: AsyncSession = Depends(get_db_session),
     temporal: Client = Depends(get_temporal_client_dep),
+    object_storage: ObjectStoragePort = Depends(get_object_storage),
 ) -> PublishApprovedResponse:
     """Bulk-publishes every product in this campaign whose content is
     content-approved (GenerationJob.status == "approved") — closes the
@@ -534,6 +596,7 @@ async def publish_approved(
                     session=session, marketing_repo=marketing_repo, creation_repo=creation_repo, temporal=temporal,
                     campaign=campaign, current_user=current_user, subscription_id=context.subscription_id,
                     image_item=image_item, caption_text=caption_text, sequence_number=next_sequence_number,
+                    object_storage=object_storage,
                 )
                 next_sequence_number += 1
 

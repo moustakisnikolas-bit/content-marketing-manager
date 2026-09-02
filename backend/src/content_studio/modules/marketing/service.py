@@ -30,12 +30,16 @@ class PreparedGeneration:
 
 
 # GenerationJob.status -> the CampaignPlanItem-level status it implies,
-# for get_effective_plan_item_statuses(). "generating"/"pending"/"approved"
-# job statuses aren't mapped here — no PLAN_ITEM_STATUSES value cleanly
-# fits "approved but not yet published," and "generating"/"pending" imply
-# no change from what's already stored.
+# for get_effective_plan_item_statuses(). "generating"/"pending" job
+# statuses aren't mapped here — they imply no change from what's already
+# stored. "approved" is a response-only value: it's not one of
+# PLAN_ITEM_STATUSES (never written to the DB column, so no CHECK
+# constraint conflict), it only ever appears as this computed overlay —
+# used by the frontend to sort approved-but-not-yet-published items to the
+# end of a campaign's item list.
 _JOB_STATUS_TO_EFFECTIVE_PLAN_ITEM_STATUS = {
     "awaiting_review": "awaiting_review",
+    "approved": "approved",
     "quality_gate_failed": "failed",
     "rejected": "failed",
     "failed": "failed",

@@ -124,6 +124,36 @@ async def _maybe_dispatch_paired_image(
         if image_item is None:
             return
 
+        # Don't generate a separate image per platform for the same
+        # product — Facebook and Instagram should show the identical
+        # photo, only the caption differs. If another platform's pair for
+        # this same product already has a generated image, reuse it
+        # directly instead of running AI image generation again (a second
+        # independent call wouldn't reproduce an identical image even from
+        # the same prompt/reference photo). Best-effort, not race-safe:
+        # two platforms' texts approved within the same instant could both
+        # still dispatch their own generation — acceptable given how
+        # unlikely that is in practice.
+        existing_image = next(
+            (
+                i
+                for i in siblings
+                if i.product_id == text_plan_item.product_id
+                and i.content_type == "image"
+                and i.id != image_item.id
+                and i.content_item_id is not None
+            ),
+            None,
+        )
+        if existing_image is not None:
+            await marketing_repo.link_plan_item_generation(
+                image_item, content_item_id=existing_image.content_item_id,
+                generation_job_id=existing_image.generation_job_id,
+            )
+            await marketing_repo.update_plan_item_status(image_item, "generating")
+            await session.commit()
+            return
+
         prepared = await prepare_paired_image_generation(session, image_item)
         if prepared is None:
             return
