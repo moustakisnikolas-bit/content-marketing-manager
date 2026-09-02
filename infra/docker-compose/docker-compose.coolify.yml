@@ -212,7 +212,14 @@ services:
     # with "port is already allocated").
     ports:
       - "8001:8000"
-    restart: on-failure
+    # unless-stopped, not on-failure: on-failure only restarts a crashed
+    # container, it does not start one back up after a Docker daemon /
+    # VPS reboot. Was on-failure to crash-loop until `alembic upgrade head`
+    # finished (see the old gotcha this fixed) back when migrations weren't
+    # sequenced properly; now that alembic runs as a real Coolify
+    # pre-deployment command (set via the API, see project memory), that
+    # race no longer exists and this can match every other service.
+    restart: unless-stopped
 
   worker:
     build:
@@ -227,7 +234,8 @@ services:
         condition: service_healthy
       backend:
         condition: service_started
-    restart: on-failure
+    # See backend's restart comment above — same reasoning applies here.
+    restart: unless-stopped
 
   frontend:
     build:
