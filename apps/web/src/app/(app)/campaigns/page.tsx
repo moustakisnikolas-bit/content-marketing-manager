@@ -141,7 +141,10 @@ function PlanItemReviewPanel({
         {detail && latestRevision ? (
           <RevisionPreview
             revision={latestRevision}
-            contentType={item.content_type}
+            // A Story plan item's underlying generated content is still an
+            // image (see prepare_story_image_generation in commerce/service.py) —
+            // only CampaignPlanItem.content_type says "story".
+            contentType={item.content_type === "story" ? "image" : item.content_type}
             onEdited={() => queryClient.invalidateQueries({ queryKey: ["content", "items"] })}
           />
         ) : (
@@ -195,6 +198,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [refreshingPhotos, setRefreshingPhotos] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [publishing, setPublishing] = useState(false);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -244,6 +248,28 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
       toast.error(err instanceof ApiError ? err.message : "Couldn't remove this campaign.");
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handlePublishApproved = async () => {
+    setPublishing(true);
+    try {
+      const result = await api.publishApprovedCampaign(campaignId);
+      if (result.published.length === 0 && result.skipped.length === 0) {
+        toast.info("Nothing ready to publish yet — approve some content first.");
+      } else {
+        const storyCount = result.published.filter((p) => p.story_plan_item_id).length;
+        toast.success(
+          `Published ${result.published.length} post(s)` +
+            (storyCount > 0 ? ` (${storyCount} with a Story queued for review)` : "") +
+            (result.skipped.length > 0 ? ` — skipped ${result.skipped.length}: ${result.skipped.map((s) => s.reason).join("; ")}` : ""),
+        );
+      }
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't publish approved content.");
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -311,9 +337,14 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
             </div>
             <div className="flex gap-2">
               {detail.plan_items.some((i) => i.product_id) && (
-                <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
-                  {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
-                </Button>
+                <>
+                  <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
+                    {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
+                  </Button>
+                  <Button size="sm" disabled={publishing} onClick={handlePublishApproved}>
+                    {publishing ? "Publishing..." : "Publish approved"}
+                  </Button>
+                </>
               )}
               <Button size="sm" variant="ghost" disabled={cancelling} onClick={handleCancelCampaign}>
                 {cancelling ? "Removing..." : "Remove campaign"}

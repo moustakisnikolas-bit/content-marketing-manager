@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -260,6 +260,50 @@ async def test_best_posting_time_reports_low_confidence_with_few_samples(db_sess
 
     assert recommendation.confidence == "low"
     assert "low" in recommendation.explanation.lower()
+
+
+async def test_suggest_next_scheduling_slots_falls_back_with_no_history(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    engine = RecommendationEngine(db_session)
+
+    slots = await engine.suggest_next_scheduling_slots(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], count=3
+    )
+
+    assert len(slots) == 3
+    assert all(slot.hour == 19 for slot in slots)  # fixed weekday-evening default
+    assert slots[1] == slots[0] + timedelta(days=1)
+    assert slots[2] == slots[0] + timedelta(days=2)
+    assert all(slot > datetime.now(UTC) for slot in slots)
+
+
+async def test_suggest_next_scheduling_slots_anchors_on_winning_daypart(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    analytics_repo = AnalyticsRepository(db_session)
+    definition = await analytics_repo.get_metric_definition_by_name("engagement_rate")
+
+    async def _snapshot(hour: int, value: str) -> None:
+        await analytics_repo.create_metric_snapshot(
+            organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+            metric_definition_id=definition.id, raw_provider_name="facebook", raw_payload={},
+            normalized_value=Decimal(value),
+            measurement_time=datetime.now(UTC).replace(hour=hour, minute=0, second=0, microsecond=0),
+            collection_time=datetime.now(UTC),
+        )
+
+    # Morning (5-11) samples score higher than evening (17-23) samples here.
+    await _snapshot(9, "0.30")
+    await _snapshot(10, "0.28")
+    await _snapshot(20, "0.05")
+    await db_session.commit()
+
+    engine = RecommendationEngine(db_session)
+    slots = await engine.suggest_next_scheduling_slots(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], count=2
+    )
+
+    assert all(slot.hour == 9 for slot in slots)  # morning daypart's anchor hour
+    assert slots[1] == slots[0] + timedelta(days=1)
 
 
 async def _attach_snapshots(

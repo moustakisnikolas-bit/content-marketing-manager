@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from content_studio.modules.analytics.ingestion_service import MetricsIngestionService
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.governance.service import AuditService
 from content_studio.modules.publishing.models import PlatformConnection
@@ -274,6 +275,21 @@ class PublishingService:
         )
         await self._repo.update_plan_status(plan, "published" if matches else "failed")
         await self._session.commit()
+
+        if matches:
+            # Best-effort: this is how metric_snapshots actually gets real
+            # data going forward (previously only reachable via a manual,
+            # never-called API endpoint) so suggest_next_scheduling_slots()
+            # has real history to learn from. A failure here must never
+            # undo reconcile()'s own already-committed result.
+            ingestion = MetricsIngestionService(
+                self._session, secrets=self._secrets, platform_adapter_factory=lambda _platform: self._platform_adapter
+            )
+            try:
+                await ingestion.ingest_for_attempt(attempt.id)
+            except Exception:  # noqa: BLE001, S110 — metrics ingestion is never allowed to break reconcile()
+                pass
+
         return ReconcileResult(matches_expected=matches, external_status=external_status)
 
     async def finalize_rejected(self, plan_id: uuid.UUID, user_id: uuid.UUID, comment: str | None) -> None:

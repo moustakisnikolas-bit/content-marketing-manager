@@ -612,6 +612,39 @@ def _build_text_brief(
     return "\n".join(lines)
 
 
+def derive_story_hook(caption: str, *, max_length: int = 60) -> str:
+    """A short, catchy phrase to bake into a Story image — Instagram's
+    Stories Content-Publishing API has no caption/text-overlay support at
+    all (confirmed directly against SocialPlatformPort's Instagram
+    implementation), so this text has to be rendered into the image
+    pixels themselves. The whole approved caption is too long to read as
+    an overlay, so this takes just its first sentence, further clipped if
+    still too long."""
+    first_sentence = re.split(r"(?<=[.!?])\s", caption.strip(), maxsplit=1)[0]
+    if len(first_sentence) <= max_length:
+        return first_sentence
+    return first_sentence[: max_length - 1].rstrip() + "…"
+
+
+def build_story_brief(product: Product, hook_text: str) -> str:
+    """Entry point for publish_approved()'s companion-story creation (see
+    api/v1/marketing.py) — keeps the size-suffix-stripping and permalink
+    lookup details local to this module rather than duplicating them at
+    the call site."""
+    product_url = (product.raw_payload or {}).get("permalink") if isinstance(product.raw_payload, dict) else None
+    return _build_story_image_edit_prompt(
+        product_title=_strip_product_size(product.title), hook_text=hook_text, product_url=product_url
+    )
+
+
+def _build_story_image_edit_prompt(*, product_title: str, hook_text: str, product_url: str | None) -> str:
+    url_line = f' Include this link as small, readable text near the bottom: "{product_url}".' if product_url else ""
+    return (
+        f"Keep the product exactly as shown. Overlay this short catchy phrase in bold, clearly readable "
+        f'text near the top of the image: "{hook_text}".{url_line} This is for {product_title}.'
+    )
+
+
 def _build_image_edit_prompt(*, product_title: str, campaign_description: str, has_reference_image: bool) -> str:
     if has_reference_image:
         # The model already sees the real product photo — describing the
@@ -668,3 +701,40 @@ async def prepare_paired_image_generation(
     except NoActiveRecipe:
         return None
     return replace(prepared, brief_text=image_brief)
+
+
+async def prepare_story_image_generation(
+    session: AsyncSession, story_plan_item: CampaignPlanItem, *, reference_image_url: str | None
+) -> PreparedGeneration | None:
+    """Companion-story counterpart to prepare_paired_image_generation(),
+    called when a product's post is scheduled via publish_approved(). The
+    underlying generated asset is still an "image" ContentItem/recipe —
+    Instagram Stories publish an image, just through
+    PublicationPlan.target_format="story" rather than a different content
+    type — only CampaignPlanItem.content_type is "story". That's why this
+    can't reuse MarketingService.prepare_item_generation() as-is: it looks
+    up the active recipe by plan_item.content_type, and there's no "story"
+    ContentRecipe. Returns None (never raises) when there's no active
+    image recipe, same "leave it for a later retry" posture as
+    prepare_paired_image_generation()."""
+    creation_repo = CreationRepository(session)
+    recipe = await creation_repo.get_active_recipe_for_content_type("image")
+    if recipe is None:
+        return None
+
+    marketing_repo = MarketingRepository(session)
+    campaign = await marketing_repo.get_campaign_by_id(story_plan_item.campaign_id)
+    assert campaign is not None
+
+    content_item = await creation_repo.create_content_item(
+        organization_id=campaign.organization_id,
+        workspace_id=campaign.workspace_id,
+        created_by_user_id=campaign.approved_by_user_id,
+        content_type="image",
+        title=story_plan_item.title,
+    )
+    await session.commit()
+    return PreparedGeneration(
+        content_item_id=content_item.id, recipe_id=recipe.id, brief_text=story_plan_item.brief_text,
+        reference_image_url=reference_image_url,
+    )

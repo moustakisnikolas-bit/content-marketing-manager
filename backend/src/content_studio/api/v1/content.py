@@ -11,6 +11,7 @@ from content_studio.api.deps import (
     get_workspace_context,
 )
 from content_studio.config import get_settings
+from content_studio.correlation import get_correlation_id
 from content_studio.modules.commerce.service import prepare_paired_image_generation
 from content_studio.modules.creation.models import GenerationJob
 from content_studio.modules.creation.repository import CreationRepository
@@ -30,8 +31,10 @@ from content_studio.modules.creation.text_diff import extract_meaningful_deletio
 from content_studio.modules.governance.service import AuditService
 from content_studio.modules.identity.models import User
 from content_studio.modules.marketing.repository import MarketingRepository
+from content_studio.modules.publishing.repository import PublishingRepository
 from content_studio.workflows.client import get_temporal_client
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
+from content_studio.workflows.publication import PublicationWorkflow, PublicationWorkflowInput
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -141,6 +144,56 @@ async def _maybe_dispatch_paired_image(
         await marketing_repo.update_plan_item_brief_text(image_item, prepared.brief_text)
         await session.commit()
     except Exception:  # noqa: BLE001, S110 — must never break the text-approval response itself
+        pass
+
+
+async def _maybe_publish_approved_story(
+    job: GenerationJob, current_user: User, session: AsyncSession, temporal: Client
+) -> None:
+    """When an approved job is a companion Story item (created by
+    publish_approved() in api/v1/marketing.py), immediately publishes it —
+    same "the explicit Approve click IS the approval" pattern as
+    _maybe_dispatch_paired_image() above, just a step later in the
+    pipeline: a story publishes rather than cascading into dispatching
+    anything else. scheduled_for is None (publish right away) since,
+    unlike its parent post, a story isn't scheduled onto a best-time slot.
+    Best-effort: any failure here must never break the approval response
+    itself."""
+    try:
+        marketing_repo = MarketingRepository(session)
+        story_item = await marketing_repo.get_plan_item_by_generation_job_id(job.id)
+        if story_item is None or story_item.content_type != "story" or story_item.publication_plan_id is not None:
+            return
+
+        publishing_repo = PublishingRepository(session)
+        connections = await publishing_repo.list_connections_for_workspace(job.workspace_id)
+        connection = next((c for c in connections if c.platform == "instagram" and c.status == "connected"), None)
+        if connection is None:
+            return
+
+        plan = await publishing_repo.create_publication_plan(
+            organization_id=job.organization_id, workspace_id=job.workspace_id,
+            content_item_id=job.content_item_id, platform_connection_id=connection.id,
+            created_by_user_id=current_user.id, scheduled_for=None, target_format="story",
+        )
+        await session.commit()
+
+        settings = get_settings()
+        workflow_id = f"publication-{plan.id}"
+        workflow_input = PublicationWorkflowInput(plan_id=str(plan.id), correlation_id=get_correlation_id())
+        await temporal.start_workflow(
+            PublicationWorkflow.run, args=[workflow_input, None], id=workflow_id, task_queue=settings.temporal_task_queue,
+        )
+        await publishing_repo.set_plan_workflow_id(plan, workflow_id)
+        await session.commit()
+
+        handle = temporal.get_workflow_handle(workflow_id)
+        await handle.signal(
+            PublicationWorkflow.submit_review, args=["approved", str(current_user.id), "Auto-approved story"],
+        )
+        await marketing_repo.link_plan_item_publication(story_item, publication_plan_id=plan.id)
+        await session.commit()
+    except Exception:  # noqa: BLE001, S110 — must never break the approval response itself
         pass
 
 
@@ -345,6 +398,7 @@ async def review_generation_job(
 
     if body.decision == "approved":
         await _maybe_dispatch_paired_image(job, current_user, session, temporal)
+        await _maybe_publish_approved_story(job, current_user, session, temporal)
         return {"status": "signal_sent", "new_job_id": None}
 
     new_brief_text = f"{job.brief_text}\n\nRevision requested: {body.comment}" if body.comment else job.brief_text

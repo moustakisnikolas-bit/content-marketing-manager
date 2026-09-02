@@ -35,6 +35,14 @@ _DAYPARTS: list[tuple[str, range]] = [
     ("evening", range(17, 24)),
 ]
 
+# Anchor clock hour used to turn a winning daypart into an actual
+# scheduled_for datetime — the midpoint of each bucket's range.
+_DAYPART_ANCHOR_HOUR = {"night": 3, "morning": 9, "afternoon": 14, "evening": 19}
+# No history yet -> a clearly-labeled fixed default (weekday evening),
+# never a fabricated "data-driven" claim. Same honesty rule
+# generate_best_posting_time() follows via InsufficientData.
+_FALLBACK_DAYPART = "evening"
+
 
 def confidence_for_sample_size(n: int) -> str:
     if n <= _LOW_CONFIDENCE_MAX:
@@ -146,6 +154,36 @@ class RecommendationEngine:
             expires_at=now + timedelta(days=30),
             created_at=now,
         )
+
+    async def suggest_next_scheduling_slots(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        count: int,
+        metric_name: str = "engagement_rate",
+    ) -> list[datetime]:
+        """The next `count` future publish times, one per day, anchored on
+        the hour this workspace's own publish history shows performs best.
+        Wraps generate_best_posting_time() (which also persists a
+        Recommendation row, same as calling it directly) and falls back to
+        a fixed weekday-evening default when there isn't enough history
+        yet, rather than surfacing InsufficientData to a bulk-publish
+        caller that has no UI for it."""
+        try:
+            recommendation = await self.generate_best_posting_time(
+                organization_id=organization_id, workspace_id=workspace_id, metric_name=metric_name
+            )
+            daypart = recommendation.evidence["best_bucket"]
+        except (InsufficientData, UnknownMetric):
+            daypart = _FALLBACK_DAYPART
+
+        hour = _DAYPART_ANCHOR_HOUR[daypart]
+        now = datetime.now(UTC)
+        first_slot = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if first_slot <= now:
+            first_slot += timedelta(days=1)
+        return [first_slot + timedelta(days=i) for i in range(count)]
 
     async def generate_campaign_comparison(
         self,

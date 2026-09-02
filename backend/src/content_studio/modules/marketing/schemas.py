@@ -97,6 +97,25 @@ class CreateAutoPilotPolicyRequest(BaseModel):
     posting_window_end_hour: int = Field(default=23, ge=0, le=23)
 
 
+class PublishedProductOut(BaseModel):
+    product_id: uuid.UUID | None
+    plan_item_id: uuid.UUID
+    publication_plan_id: uuid.UUID
+    scheduled_for: datetime
+    story_plan_item_id: uuid.UUID | None = None
+
+
+class SkippedProductOut(BaseModel):
+    product_id: uuid.UUID | None
+    plan_item_id: uuid.UUID
+    reason: str
+
+
+class PublishApprovedResponse(BaseModel):
+    published: list[PublishedProductOut]
+    skipped: list[SkippedProductOut]
+
+
 class AutoPilotPolicyOut(BaseModel):
     id: uuid.UUID
     allowed_platforms: list[str]

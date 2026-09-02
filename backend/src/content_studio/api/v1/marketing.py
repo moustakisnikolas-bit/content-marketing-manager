@@ -12,11 +12,22 @@ from content_studio.api.deps import (
     get_temporal_client_dep,
     get_workspace_context,
 )
+from content_studio.api.v1.content import _dispatch_generation_job
 from content_studio.config import get_settings
-from content_studio.modules.commerce.service import prepare_paired_image_generation
+from content_studio.correlation import get_correlation_id
+from content_studio.modules.analytics.recommendation_engine import RecommendationEngine
+from content_studio.modules.commerce.repository import CommerceRepository
+from content_studio.modules.commerce.service import (
+    build_story_brief,
+    derive_story_hook,
+    prepare_paired_image_generation,
+    prepare_story_image_generation,
+)
+from content_studio.modules.creation.models import GenerationJob
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.identity.models import User
 from content_studio.modules.marketing.exceptions import MarketingError
+from content_studio.modules.marketing.models import Campaign, CampaignPlanItem
 from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.modules.marketing.schemas import (
     ApproveProposalRequest,
@@ -31,12 +42,92 @@ from content_studio.modules.marketing.schemas import (
     CreateBriefRequest,
     CreateBriefResponse,
     MarketingGoalOut,
+    PublishApprovedResponse,
+    PublishedProductOut,
+    SkippedProductOut,
 )
 from content_studio.modules.marketing.service import MarketingService
+from content_studio.modules.publishing.repository import PublishingRepository
 from content_studio.workflows.autopilot import AutoPilotCampaignWorkflow
 from content_studio.workflows.generation import GenerationWorkflow, GenerationWorkflowInput
+from content_studio.workflows.publication import PublicationWorkflow, PublicationWorkflowInput
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
+
+
+async def _approved_job(creation_repo: CreationRepository, item: CampaignPlanItem | None) -> GenerationJob | None:
+    if item is None or item.generation_job_id is None:
+        return None
+    job = await creation_repo.get_generation_job_by_id(item.generation_job_id)
+    return job if job is not None and job.status == "approved" else None
+
+
+async def _selected_revision(creation_repo: CreationRepository, content_item_id: uuid.UUID | None):
+    if content_item_id is None:
+        return None
+    package = await creation_repo.get_package_for_item(content_item_id)
+    if package is None:
+        return None
+    return await creation_repo.get_revision_by_id(package.selected_revision_id)
+
+
+async def _maybe_create_companion_story(
+    *,
+    session: AsyncSession,
+    marketing_repo: MarketingRepository,
+    creation_repo: CreationRepository,
+    temporal: Client,
+    campaign: Campaign,
+    current_user: User,
+    subscription_id: uuid.UUID,
+    image_item: CampaignPlanItem,
+    caption_text: str | None,
+    sequence_number: int,
+) -> uuid.UUID | None:
+    """Auto-generates a Story companion for a product's newly-scheduled
+    Instagram post (see publish_approved() below). Dispatched immediately
+    so it lands as an ordinary awaiting_review item in the same campaign —
+    reusing the existing review panel is the whole point, no new approval
+    UI surface needed. Approving it later publishes it via
+    _maybe_publish_approved_story() in api/v1/content.py. Best-effort: any
+    failure here must never undo or block the post that was actually just
+    published."""
+    if image_item.product_id is None:
+        return None
+    try:
+        commerce_repo = CommerceRepository(session)
+        product = await commerce_repo.get_product_with_details_by_id(image_item.product_id)
+        if product is None:
+            return None
+        reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
+        hook_text = derive_story_hook(caption_text or product.title)
+        brief_text = build_story_brief(product, hook_text)
+
+        story_item = await marketing_repo.create_plan_item(
+            campaign_id=image_item.campaign_id, sequence_number=sequence_number, title=f"{product.title} (story)",
+            brief_text=brief_text, target_platform="instagram", product_id=product.id, content_type="story",
+            source_plan_item_id=image_item.id,
+        )
+        prepared = await prepare_story_image_generation(session, story_item, reference_image_url=reference_image_url)
+        if prepared is None:
+            return story_item.id
+
+        new_job = await _dispatch_generation_job(
+            repo=creation_repo, session=session, temporal=temporal,
+            organization_id=campaign.organization_id, workspace_id=campaign.workspace_id,
+            content_item_id=prepared.content_item_id, recipe_id=prepared.recipe_id,
+            requested_by_user_id=current_user.id, subscription_id=subscription_id,
+            brief_text=prepared.brief_text, reference_image_url=prepared.reference_image_url,
+        )
+        await marketing_repo.link_plan_item_generation(
+            story_item, content_item_id=prepared.content_item_id, generation_job_id=new_job.id
+        )
+        await marketing_repo.update_plan_item_status(story_item, "generating")
+        await marketing_repo.update_plan_item_brief_text(story_item, prepared.brief_text)
+        await session.commit()
+        return story_item.id
+    except Exception:  # noqa: BLE001 — the already-published post must not be undone by a story-side failure
+        return None
 
 
 @router.get("/goals", response_model=list[MarketingGoalOut])
@@ -274,6 +365,160 @@ async def remove_plan_item(
     await repo.update_plan_item_status(plan_item, "cancelled")
     await session.commit()
     return {"status": "cancelled"}
+
+
+@router.post("/campaigns/{campaign_id}/publish-approved", response_model=PublishApprovedResponse)
+async def publish_approved(
+    campaign_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+    temporal: Client = Depends(get_temporal_client_dep),
+) -> PublishApprovedResponse:
+    """Bulk-publishes every product in this campaign whose content is
+    content-approved (GenerationJob.status == "approved") — closes the
+    "campaigns don't launch on Instagram" gap: previously the only way to
+    publish anything was the disconnected per-item form on /calendar,
+    which nobody had ever pointed at Instagram. For a product with both an
+    approved text and image item, copies the caption onto the image so
+    the real post carries real text, then publishes the image (a
+    text-only product with no paired image publishes its text directly,
+    unchanged from before). Schedules each post on this workspace's own
+    best-performing time (RecommendationEngine.suggest_next_scheduling_slots,
+    one slot per day so a bulk publish doesn't blast everything out at
+    once), self-approves the PublicationPlan it creates (the explicit
+    "Publish approved" click IS the approval — same pattern as the
+    paired-image auto-dispatch), and — for an Instagram post — also
+    creates a companion Story plan item for its own separate review."""
+    marketing_repo = MarketingRepository(session)
+    creation_repo = CreationRepository(session)
+    publishing_repo = PublishingRepository(session)
+
+    campaign = await marketing_repo.get_campaign_by_id(campaign_id)
+    if campaign is None or campaign.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
+
+    items = await marketing_repo.list_plan_items_for_campaign(campaign_id)
+    products: dict[uuid.UUID, dict[str, CampaignPlanItem]] = {}
+    for item in items:
+        if item.product_id is None or item.status == "cancelled" or item.content_type == "story":
+            continue
+        products.setdefault(item.product_id, {})[item.content_type] = item
+
+    connections = await publishing_repo.list_connections_for_workspace(context.workspace_id)
+    connections_by_platform = {c.platform: c for c in connections if c.status == "connected"}
+
+    groups = list(products.items())
+    slots = (
+        await RecommendationEngine(session).suggest_next_scheduling_slots(
+            organization_id=context.organization_id, workspace_id=context.workspace_id, count=len(groups)
+        )
+        if groups
+        else []
+    )
+    slot_iter = iter(slots)
+    next_sequence_number = len(items) + 1
+
+    published: list[PublishedProductOut] = []
+    skipped: list[SkippedProductOut] = []
+
+    for product_id, by_type in groups:
+        text_item = by_type.get("text")
+        image_item = by_type.get("image")
+        text_job = await _approved_job(creation_repo, text_item)
+        image_job = await _approved_job(creation_repo, image_item)
+
+        if image_item is not None:
+            if image_job is None:
+                skipped.append(
+                    SkippedProductOut(product_id=product_id, plan_item_id=image_item.id, reason="Image not approved yet")
+                )
+                continue
+            primary_item = image_item
+        elif text_item is not None:
+            if text_job is None:
+                skipped.append(
+                    SkippedProductOut(product_id=product_id, plan_item_id=text_item.id, reason="Text not approved yet")
+                )
+                continue
+            primary_item = text_item
+        else:
+            continue
+
+        if primary_item.publication_plan_id is not None:
+            skipped.append(SkippedProductOut(product_id=product_id, plan_item_id=primary_item.id, reason="Already published"))
+            continue
+        if primary_item.target_platform is None:
+            skipped.append(SkippedProductOut(product_id=product_id, plan_item_id=primary_item.id, reason="No target platform set"))
+            continue
+        connection = connections_by_platform.get(primary_item.target_platform)
+        if connection is None:
+            skipped.append(
+                SkippedProductOut(
+                    product_id=product_id, plan_item_id=primary_item.id,
+                    reason=f"No connected {primary_item.target_platform} account",
+                )
+            )
+            continue
+
+        caption_text: str | None = None
+        if primary_item is image_item and text_job is not None and text_item is not None:
+            text_revision = await _selected_revision(creation_repo, text_item.content_item_id)
+            image_revision = await _selected_revision(creation_repo, image_item.content_item_id)
+            if text_revision is not None and text_revision.text_body and image_revision is not None:
+                caption_text = text_revision.text_body
+                await creation_repo.update_revision_text(image_revision, caption_text)
+
+        scheduled_for = next(slot_iter)
+        plan = await publishing_repo.create_publication_plan(
+            organization_id=context.organization_id, workspace_id=context.workspace_id,
+            content_item_id=primary_item.content_item_id, platform_connection_id=connection.id,
+            created_by_user_id=current_user.id, scheduled_for=scheduled_for, target_format="post",
+        )
+        await session.commit()
+
+        settings = get_settings()
+        workflow_id = f"publication-{plan.id}"
+        workflow_input = PublicationWorkflowInput(plan_id=str(plan.id), correlation_id=get_correlation_id())
+        await temporal.start_workflow(
+            PublicationWorkflow.run, args=[workflow_input, scheduled_for.isoformat()],
+            id=workflow_id, task_queue=settings.temporal_task_queue,
+        )
+        await publishing_repo.set_plan_workflow_id(plan, workflow_id)
+        await session.commit()
+
+        handle = temporal.get_workflow_handle(workflow_id)
+        try:
+            await handle.signal(
+                PublicationWorkflow.submit_review,
+                args=["approved", str(current_user.id), "Auto-approved via bulk publish"],
+            )
+        except RPCError as exc:
+            # The workflow may already have failed its capability check
+            # (and completed) before this signal arrives — the plan's own
+            # status already reflects that, so this isn't worth a 500.
+            if exc.status != RPCStatusCode.NOT_FOUND:
+                raise
+
+        await marketing_repo.link_plan_item_publication(primary_item, publication_plan_id=plan.id)
+
+        story_item_id: uuid.UUID | None = None
+        if primary_item is image_item and connection.platform == "instagram":
+            story_item_id = await _maybe_create_companion_story(
+                session=session, marketing_repo=marketing_repo, creation_repo=creation_repo, temporal=temporal,
+                campaign=campaign, current_user=current_user, subscription_id=context.subscription_id,
+                image_item=image_item, caption_text=caption_text, sequence_number=next_sequence_number,
+            )
+            next_sequence_number += 1
+
+        published.append(
+            PublishedProductOut(
+                product_id=product_id, plan_item_id=primary_item.id, publication_plan_id=plan.id,
+                scheduled_for=scheduled_for, story_plan_item_id=story_item_id,
+            )
+        )
+
+    return PublishApprovedResponse(published=published, skipped=skipped)
 
 
 @router.post("/campaigns/{campaign_id}/autopilot-policy", response_model=AutoPilotPolicyOut, status_code=status.HTTP_201_CREATED)

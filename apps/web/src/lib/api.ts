@@ -215,6 +215,25 @@ export interface CampaignDetailOut {
   decisions: CampaignDecisionOut[];
 }
 
+export interface PublishedProductOut {
+  product_id: string | null;
+  plan_item_id: string;
+  publication_plan_id: string;
+  scheduled_for: string;
+  story_plan_item_id: string | null;
+}
+
+export interface SkippedProductOut {
+  product_id: string | null;
+  plan_item_id: string;
+  reason: string;
+}
+
+export interface PublishApprovedResponse {
+  published: PublishedProductOut[];
+  skipped: SkippedProductOut[];
+}
+
 export interface AutoPilotPolicyOut {
   id: string;
   allowed_platforms: string[];
@@ -581,6 +600,9 @@ export const api = {
 
   removePlanItem: (campaignId: string, itemId: string) =>
     apiClient.post<{ status: string }>(`/marketing/campaigns/${campaignId}/items/${itemId}/remove`),
+
+  publishApprovedCampaign: (campaignId: string) =>
+    apiClient.post<PublishApprovedResponse>(`/marketing/campaigns/${campaignId}/publish-approved`),
 
   createAutoPilotPolicy: (
     campaignId: string,

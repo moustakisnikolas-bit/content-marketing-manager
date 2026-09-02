@@ -182,6 +182,13 @@ class CampaignPlanItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     product_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    # Set only on content_type="story" items — the post plan item this
+    # story is a companion to (same product, same campaign). Never set for
+    # a "text"/"image" item; used to find/avoid duplicate stories and to
+    # show "companion to X" in the UI.
+    source_plan_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaign_plan_items.id", ondelete="SET NULL"), nullable=True
+    )
     content_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
 
