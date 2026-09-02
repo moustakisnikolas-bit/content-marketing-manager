@@ -218,6 +218,51 @@ async def _seed_campaign_with_pair(
     }
 
 
+async def test_publish_approved_dry_run_previews_without_side_effects(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    seeded = await _seed_campaign_with_pair(db_session, ctx, caption="Cozy nights start here. Light one and relax.")
+    temporal = _FakeTemporalClient()
+
+    preview = await publish_approved(
+        campaign_id=seeded["campaign"].id, dry_run=True, current_user=ctx["user"], context=_context(ctx),
+        session=db_session, temporal=temporal,
+    )
+
+    assert preview.dry_run is True
+    assert preview.skipped == []
+    assert len(preview.published) == 1
+    previewed = preview.published[0]
+    assert previewed.plan_item_id == seeded["image_item"].id
+    assert previewed.publication_plan_id is None
+    assert previewed.story_plan_item_id is None
+    assert previewed.will_create_story is True
+    assert previewed.scheduled_for is not None
+
+    # No side effects: no workflow started/signaled, no plan linked, the
+    # caption wasn't copied onto the image revision, and no story item exists.
+    assert temporal.started == []
+    assert temporal.signals == []
+    marketing_repo = MarketingRepository(db_session)
+    refreshed_image_item = await marketing_repo.get_plan_item_by_id(seeded["image_item"].id)
+    assert refreshed_image_item.publication_plan_id is None
+    items = await marketing_repo.list_plan_items_for_campaign(seeded["campaign"].id)
+    assert not any(i.content_type == "story" for i in items)
+
+    creation_repo = CreationRepository(db_session)
+    package = await creation_repo.get_package_for_item(seeded["image_content_item"].id)
+    image_revision = await creation_repo.get_revision_by_id(package.selected_revision_id)
+    assert image_revision.text_body != "Cozy nights start here. Light one and relax."
+
+    # Confirming for real afterward still works and uses the same slot logic.
+    confirmed = await publish_approved(
+        campaign_id=seeded["campaign"].id, current_user=ctx["user"], context=_context(ctx),
+        session=db_session, temporal=temporal,
+    )
+    assert confirmed.dry_run is False
+    assert len(confirmed.published) == 1
+    assert confirmed.published[0].publication_plan_id is not None
+
+
 async def test_publish_approved_copies_caption_publishes_image_and_creates_story(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     seeded = await _seed_campaign_with_pair(db_session, ctx, caption="Cozy nights start here. Light one and relax.")

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api-client";
 import { RevisionPreview } from "@/components/revision-preview";
 import { SelectableList } from "@/components/selectable-list";
-import { api, type CampaignPlanItemOut } from "@/lib/api";
+import { api, type CampaignPlanItemOut, type PublishApprovedResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const PLAN_ITEM_STATUS_LABELS: Record<string, string> = {
@@ -199,6 +199,8 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   const [refreshingPhotos, setRefreshingPhotos] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [publishPreview, setPublishPreview] = useState<PublishApprovedResponse | null>(null);
+  const [confirmingPublish, setConfirmingPublish] = useState(false);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -251,25 +253,38 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
     }
   };
 
-  const handlePublishApproved = async () => {
+  const handlePreviewPublish = async () => {
     setPublishing(true);
     try {
-      const result = await api.publishApprovedCampaign(campaignId);
-      if (result.published.length === 0 && result.skipped.length === 0) {
+      const preview = await api.publishApprovedCampaign(campaignId, { dryRun: true });
+      if (preview.published.length === 0 && preview.skipped.length === 0) {
         toast.info("Nothing ready to publish yet — approve some content first.");
       } else {
-        const storyCount = result.published.filter((p) => p.story_plan_item_id).length;
-        toast.success(
-          `Published ${result.published.length} post(s)` +
-            (storyCount > 0 ? ` (${storyCount} with a Story queued for review)` : "") +
-            (result.skipped.length > 0 ? ` — skipped ${result.skipped.length}: ${result.skipped.map((s) => s.reason).join("; ")}` : ""),
-        );
+        setPublishPreview(preview);
       }
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't preview what would be published.");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const handleConfirmPublish = async () => {
+    setConfirmingPublish(true);
+    try {
+      const result = await api.publishApprovedCampaign(campaignId);
+      const storyCount = result.published.filter((p) => p.will_create_story).length;
+      toast.success(
+        `Published ${result.published.length} post(s)` +
+          (storyCount > 0 ? ` (${storyCount} with a Story queued for review)` : "") +
+          (result.skipped.length > 0 ? ` — skipped ${result.skipped.length}: ${result.skipped.map((s) => s.reason).join("; ")}` : ""),
+      );
+      setPublishPreview(null);
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Couldn't publish approved content.");
     } finally {
-      setPublishing(false);
+      setConfirmingPublish(false);
     }
   };
 
@@ -310,8 +325,60 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
     setReviewingId(next && next.id !== reviewingId ? next.id : null);
   };
 
+  const titleForPlanItem = (planItemId: string) =>
+    detail.plan_items.find((i) => i.id === planItemId)?.title ?? "Untitled item";
+
   return (
     <div className="space-y-6">
+      {publishPreview && (
+        <Card className="border-primary/30">
+          <CardHeader>
+            <CardTitle className="text-base">Review before publishing</CardTitle>
+            <CardDescription>
+              Nothing has gone out yet — these are the real times each post would be scheduled for. Posts are
+              spaced one per day so they don&apos;t all publish at once.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {publishPreview.published.length > 0 && (
+              <ul className="space-y-2">
+                {publishPreview.published.map((p) => (
+                  <li key={p.plan_item_id} className="rounded-md border border-border p-3 text-sm">
+                    <p className="font-medium">{titleForPlanItem(p.plan_item_id)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Scheduled for {new Date(p.scheduled_for).toLocaleString()}
+                      {p.will_create_story && " · a Story will also be created for review"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {publishPreview.skipped.length > 0 && (
+              <ul className="space-y-2">
+                {publishPreview.skipped.map((s) => (
+                  <li key={s.plan_item_id} className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+                    <p className="font-medium">{titleForPlanItem(s.plan_item_id)}</p>
+                    <p className="text-xs">Skipped — {s.reason}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button size="sm" variant="ghost" disabled={confirmingPublish} onClick={() => setPublishPreview(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                disabled={confirmingPublish || publishPreview.published.length === 0}
+                onClick={handleConfirmPublish}
+              >
+                {confirmingPublish ? "Publishing..." : `Confirm & publish ${publishPreview.published.length} post(s)`}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {reviewingItem && (
         <PlanItemReviewPanel
           key={reviewingItem.id}
@@ -341,8 +408,8 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
                   <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
                     {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
                   </Button>
-                  <Button size="sm" disabled={publishing} onClick={handlePublishApproved}>
-                    {publishing ? "Publishing..." : "Publish approved"}
+                  <Button size="sm" disabled={publishing} onClick={handlePreviewPublish}>
+                    {publishing ? "Checking..." : "Publish approved"}
                   </Button>
                 </>
               )}

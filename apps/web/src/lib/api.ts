@@ -218,9 +218,13 @@ export interface CampaignDetailOut {
 export interface PublishedProductOut {
   product_id: string | null;
   plan_item_id: string;
-  publication_plan_id: string;
+  // null when this came from a dry_run preview — nothing has actually
+  // been created yet, scheduled_for/will_create_story still show what a
+  // real call would do.
+  publication_plan_id: string | null;
   scheduled_for: string;
   story_plan_item_id: string | null;
+  will_create_story: boolean;
 }
 
 export interface SkippedProductOut {
@@ -230,6 +234,7 @@ export interface SkippedProductOut {
 }
 
 export interface PublishApprovedResponse {
+  dry_run: boolean;
   published: PublishedProductOut[];
   skipped: SkippedProductOut[];
 }
@@ -601,8 +606,10 @@ export const api = {
   removePlanItem: (campaignId: string, itemId: string) =>
     apiClient.post<{ status: string }>(`/marketing/campaigns/${campaignId}/items/${itemId}/remove`),
 
-  publishApprovedCampaign: (campaignId: string) =>
-    apiClient.post<PublishApprovedResponse>(`/marketing/campaigns/${campaignId}/publish-approved`),
+  publishApprovedCampaign: (campaignId: string, options?: { dryRun?: boolean }) =>
+    apiClient.post<PublishApprovedResponse>(
+      `/marketing/campaigns/${campaignId}/publish-approved${options?.dryRun ? "?dry_run=true" : ""}`,
+    ),
 
   createAutoPilotPolicy: (
     campaignId: string,

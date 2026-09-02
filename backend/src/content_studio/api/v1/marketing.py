@@ -370,6 +370,7 @@ async def remove_plan_item(
 @router.post("/campaigns/{campaign_id}/publish-approved", response_model=PublishApprovedResponse)
 async def publish_approved(
     campaign_id: uuid.UUID,
+    dry_run: bool = False,
     current_user: User = Depends(get_current_user),
     context: WorkspaceContext = Depends(get_workspace_context),
     session: AsyncSession = Depends(get_db_session),
@@ -389,7 +390,13 @@ async def publish_approved(
     once), self-approves the PublicationPlan it creates (the explicit
     "Publish approved" click IS the approval — same pattern as the
     paired-image auto-dispatch), and — for an Instagram post — also
-    creates a companion Story plan item for its own separate review."""
+    creates a companion Story plan item for its own separate review.
+
+    dry_run=True runs the exact same grouping/validation/scheduling logic
+    (so the returned scheduled_for times are the real times a live call
+    would use) but performs none of the writes below — no PublicationPlan,
+    no workflow, no caption copy, no Story — so the frontend can show the
+    user what's about to happen before they commit to it."""
     marketing_repo = MarketingRepository(session)
     creation_repo = CreationRepository(session)
     publishing_repo = PublishingRepository(session)
@@ -461,64 +468,70 @@ async def publish_approved(
             )
             continue
 
+        will_create_story = primary_item is image_item and connection.platform == "instagram"
         caption_text: str | None = None
         if primary_item is image_item and text_job is not None and text_item is not None:
             text_revision = await _selected_revision(creation_repo, text_item.content_item_id)
             image_revision = await _selected_revision(creation_repo, image_item.content_item_id)
             if text_revision is not None and text_revision.text_body and image_revision is not None:
                 caption_text = text_revision.text_body
-                await creation_repo.update_revision_text(image_revision, caption_text)
+                if not dry_run:
+                    await creation_repo.update_revision_text(image_revision, caption_text)
 
         scheduled_for = next(slot_iter)
-        plan = await publishing_repo.create_publication_plan(
-            organization_id=context.organization_id, workspace_id=context.workspace_id,
-            content_item_id=primary_item.content_item_id, platform_connection_id=connection.id,
-            created_by_user_id=current_user.id, scheduled_for=scheduled_for, target_format="post",
-        )
-        await session.commit()
-
-        settings = get_settings()
-        workflow_id = f"publication-{plan.id}"
-        workflow_input = PublicationWorkflowInput(plan_id=str(plan.id), correlation_id=get_correlation_id())
-        await temporal.start_workflow(
-            PublicationWorkflow.run, args=[workflow_input, scheduled_for.isoformat()],
-            id=workflow_id, task_queue=settings.temporal_task_queue,
-        )
-        await publishing_repo.set_plan_workflow_id(plan, workflow_id)
-        await session.commit()
-
-        handle = temporal.get_workflow_handle(workflow_id)
-        try:
-            await handle.signal(
-                PublicationWorkflow.submit_review,
-                args=["approved", str(current_user.id), "Auto-approved via bulk publish"],
-            )
-        except RPCError as exc:
-            # The workflow may already have failed its capability check
-            # (and completed) before this signal arrives — the plan's own
-            # status already reflects that, so this isn't worth a 500.
-            if exc.status != RPCStatusCode.NOT_FOUND:
-                raise
-
-        await marketing_repo.link_plan_item_publication(primary_item, publication_plan_id=plan.id)
-
+        plan_id: uuid.UUID | None = None
         story_item_id: uuid.UUID | None = None
-        if primary_item is image_item and connection.platform == "instagram":
-            story_item_id = await _maybe_create_companion_story(
-                session=session, marketing_repo=marketing_repo, creation_repo=creation_repo, temporal=temporal,
-                campaign=campaign, current_user=current_user, subscription_id=context.subscription_id,
-                image_item=image_item, caption_text=caption_text, sequence_number=next_sequence_number,
+
+        if not dry_run:
+            plan = await publishing_repo.create_publication_plan(
+                organization_id=context.organization_id, workspace_id=context.workspace_id,
+                content_item_id=primary_item.content_item_id, platform_connection_id=connection.id,
+                created_by_user_id=current_user.id, scheduled_for=scheduled_for, target_format="post",
             )
-            next_sequence_number += 1
+            await session.commit()
+            plan_id = plan.id
+
+            settings = get_settings()
+            workflow_id = f"publication-{plan.id}"
+            workflow_input = PublicationWorkflowInput(plan_id=str(plan.id), correlation_id=get_correlation_id())
+            await temporal.start_workflow(
+                PublicationWorkflow.run, args=[workflow_input, scheduled_for.isoformat()],
+                id=workflow_id, task_queue=settings.temporal_task_queue,
+            )
+            await publishing_repo.set_plan_workflow_id(plan, workflow_id)
+            await session.commit()
+
+            handle = temporal.get_workflow_handle(workflow_id)
+            try:
+                await handle.signal(
+                    PublicationWorkflow.submit_review,
+                    args=["approved", str(current_user.id), "Auto-approved via bulk publish"],
+                )
+            except RPCError as exc:
+                # The workflow may already have failed its capability check
+                # (and completed) before this signal arrives — the plan's own
+                # status already reflects that, so this isn't worth a 500.
+                if exc.status != RPCStatusCode.NOT_FOUND:
+                    raise
+
+            await marketing_repo.link_plan_item_publication(primary_item, publication_plan_id=plan.id)
+
+            if will_create_story:
+                story_item_id = await _maybe_create_companion_story(
+                    session=session, marketing_repo=marketing_repo, creation_repo=creation_repo, temporal=temporal,
+                    campaign=campaign, current_user=current_user, subscription_id=context.subscription_id,
+                    image_item=image_item, caption_text=caption_text, sequence_number=next_sequence_number,
+                )
+                next_sequence_number += 1
 
         published.append(
             PublishedProductOut(
-                product_id=product_id, plan_item_id=primary_item.id, publication_plan_id=plan.id,
-                scheduled_for=scheduled_for, story_plan_item_id=story_item_id,
+                product_id=product_id, plan_item_id=primary_item.id, publication_plan_id=plan_id,
+                scheduled_for=scheduled_for, story_plan_item_id=story_item_id, will_create_story=will_create_story,
             )
         )
 
-    return PublishApprovedResponse(published=published, skipped=skipped)
+    return PublishApprovedResponse(dry_run=dry_run, published=published, skipped=skipped)
 
 
 @router.post("/campaigns/{campaign_id}/autopilot-policy", response_model=AutoPilotPolicyOut, status_code=status.HTTP_201_CREATED)

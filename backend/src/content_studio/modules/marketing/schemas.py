@@ -100,9 +100,13 @@ class CreateAutoPilotPolicyRequest(BaseModel):
 class PublishedProductOut(BaseModel):
     product_id: uuid.UUID | None
     plan_item_id: uuid.UUID
-    publication_plan_id: uuid.UUID
+    # None when this is a dry_run preview — nothing has actually been
+    # created yet, scheduled_for/will_create_story still reflect what
+    # a real call would do.
+    publication_plan_id: uuid.UUID | None = None
     scheduled_for: datetime
     story_plan_item_id: uuid.UUID | None = None
+    will_create_story: bool = False
 
 
 class SkippedProductOut(BaseModel):
@@ -112,6 +116,7 @@ class SkippedProductOut(BaseModel):
 
 
 class PublishApprovedResponse(BaseModel):
+    dry_run: bool
     published: list[PublishedProductOut]
     skipped: list[SkippedProductOut]
 
