@@ -113,6 +113,11 @@ async def _maybe_dispatch_paired_image(
                 if i.product_id == text_plan_item.product_id
                 and i.content_type == "image"
                 and i.status == "pending"
+                # A product can have one pair per target platform (see
+                # build_bulk_plan_items) — match same-platform siblings only,
+                # or an Instagram text approval could dispatch the Facebook
+                # image (or vice versa) while leaving its real pair stranded.
+                and i.target_platform == text_plan_item.target_platform
             ),
             None,
         )

@@ -295,7 +295,16 @@ async def start_plan_item(
         # whatever was known when the campaign was first built).
         siblings = await marketing_repo.list_plan_items_for_campaign(campaign_id)
         text_sibling = next(
-            (i for i in siblings if i.product_id == plan_item.product_id and i.content_type == "text"), None
+            (
+                i
+                for i in siblings
+                if i.product_id == plan_item.product_id
+                and i.content_type == "text"
+                # Match the same-platform pair only — a product can have one
+                # pair per target platform (see build_bulk_plan_items).
+                and i.target_platform == plan_item.target_platform
+            ),
+            None,
         )
         text_job = (
             await creation_repo.get_generation_job_by_id(text_sibling.generation_job_id)
@@ -406,11 +415,15 @@ async def publish_approved(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found")
 
     items = await marketing_repo.list_plan_items_for_campaign(campaign_id)
-    products: dict[uuid.UUID, dict[str, CampaignPlanItem]] = {}
+    # Keyed by (product_id, target_platform), not just product_id — a
+    # product can have one text+image pair per target platform (see
+    # build_bulk_plan_items), and keying on product_id alone would let a
+    # second platform's items silently overwrite the first's in this dict.
+    products: dict[tuple[uuid.UUID, str | None], dict[str, CampaignPlanItem]] = {}
     for item in items:
         if item.product_id is None or item.status == "cancelled" or item.content_type == "story":
             continue
-        products.setdefault(item.product_id, {})[item.content_type] = item
+        products.setdefault((item.product_id, item.target_platform), {})[item.content_type] = item
 
     connections = await publishing_repo.list_connections_for_workspace(context.workspace_id)
     connections_by_platform = {c.platform: c for c in connections if c.status == "connected"}
@@ -429,7 +442,7 @@ async def publish_approved(
     published: list[PublishedProductOut] = []
     skipped: list[SkippedProductOut] = []
 
-    for product_id, by_type in groups:
+    for (product_id, _target_platform), by_type in groups:
         text_item = by_type.get("text")
         image_item = by_type.get("image")
         text_job = await _approved_job(creation_repo, text_item)

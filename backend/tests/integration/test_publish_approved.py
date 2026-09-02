@@ -157,6 +157,43 @@ def _context(ctx: dict) -> WorkspaceContext:
     )
 
 
+async def _seed_platform_pair(
+    session: AsyncSession, ctx: dict, campaign, product, *, platform: str, sequence_start: int,
+    caption: str = "Cozy nights start here. Light one and relax.",
+):
+    """Adds one content-approved text+image pair for `platform` to an
+    existing campaign/product — the unit _seed_campaign_with_pair() and
+    the multi-platform test below both build on."""
+    text_content_item, text_job = await _seed_approved_item(
+        session, ctx, content_type="text", title=f"Whiskey Caramel {platform} (text)", text_body=caption
+    )
+    image_content_item, image_job = await _seed_approved_item(
+        session, ctx, content_type="image", title=f"Whiskey Caramel {platform} (image)", text_body="unused"
+    )
+
+    marketing_repo = MarketingRepository(session)
+    text_item = await marketing_repo.create_plan_item(
+        campaign_id=campaign.id, sequence_number=sequence_start, title=f"Whiskey Caramel {platform} (text)",
+        brief_text="n/a", target_platform=platform, product_id=product.id, content_type="text",
+    )
+    await marketing_repo.link_plan_item_generation(
+        text_item, content_item_id=text_content_item.id, generation_job_id=text_job.id
+    )
+    image_item = await marketing_repo.create_plan_item(
+        campaign_id=campaign.id, sequence_number=sequence_start + 1, title=f"Whiskey Caramel {platform} (image)",
+        brief_text="n/a", target_platform=platform, product_id=product.id, content_type="image",
+    )
+    await marketing_repo.link_plan_item_generation(
+        image_item, content_item_id=image_content_item.id, generation_job_id=image_job.id
+    )
+    await session.commit()
+
+    return {
+        "text_item": text_item, "image_item": image_item,
+        "text_content_item": text_content_item, "image_content_item": image_content_item,
+    }
+
+
 async def _seed_campaign_with_pair(
     session: AsyncSession, ctx: dict, *, caption: str = "Cozy nights start here. Light one and relax.",
     connect_platform: bool = True,
@@ -187,34 +224,11 @@ async def _seed_campaign_with_pair(
         proposal_id=proposal.id, user_id=ctx["user"].id, campaign_name="Whiskey Caramel Launch"
     )
 
-    text_content_item, text_job = await _seed_approved_item(
-        session, ctx, content_type="text", title="Whiskey Caramel (text)", text_body=caption
-    )
-    image_content_item, image_job = await _seed_approved_item(
-        session, ctx, content_type="image", title="Whiskey Caramel (image)", text_body="unused"
-    )
-
-    marketing_repo = MarketingRepository(session)
-    text_item = await marketing_repo.create_plan_item(
-        campaign_id=campaign.id, sequence_number=90, title="Whiskey Caramel (text)", brief_text="n/a",
-        target_platform="instagram", product_id=product.id, content_type="text",
-    )
-    await marketing_repo.link_plan_item_generation(
-        text_item, content_item_id=text_content_item.id, generation_job_id=text_job.id
-    )
-    image_item = await marketing_repo.create_plan_item(
-        campaign_id=campaign.id, sequence_number=91, title="Whiskey Caramel (image)", brief_text="n/a",
-        target_platform="instagram", product_id=product.id, content_type="image",
-    )
-    await marketing_repo.link_plan_item_generation(
-        image_item, content_item_id=image_content_item.id, generation_job_id=image_job.id
-    )
-    await session.commit()
+    pair = await _seed_platform_pair(session, ctx, campaign, product, platform="instagram", sequence_start=90, caption=caption)
 
     return {
         "campaign": campaign, "product": product, "connection": connection,
-        "text_item": text_item, "image_item": image_item,
-        "text_content_item": text_content_item, "image_content_item": image_content_item,
+        **pair,
     }
 
 
@@ -354,3 +368,69 @@ async def test_approving_story_item_creates_and_starts_story_publication_plan(db
     assert len(temporal.signals) == 2
     publication_signal = next(s for s in temporal.signals if s[0] is PublicationWorkflow.submit_review)
     assert publication_signal[1][0] == "approved"
+
+
+async def test_publish_approved_publishes_one_product_to_each_target_platform_separately(
+    db_session: AsyncSession,
+) -> None:
+    """A product with an approved pair for both Facebook and Instagram must
+    publish both — grouping plan items by product_id alone (the bug fixed
+    alongside multi-platform Quick Start support) would let one platform's
+    pair silently overwrite the other's in the internal grouping dict."""
+    ctx = await _seed_workspace(db_session)
+    product = await _seed_product(db_session, ctx)
+
+    publishing_repo = PublishingRepository(db_session)
+    facebook_connection = await publishing_repo.create_connection(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        connected_by_user_id=ctx["user"].id, platform="facebook", external_account_id="fb-fake-1",
+        external_account_name="Fake FB", access_token_secret_ref="sealed-ref-fb", refresh_token_secret_ref=None,
+        scopes=[],
+    )
+    instagram_connection = await publishing_repo.create_connection(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        connected_by_user_id=ctx["user"].id, platform="instagram", external_account_id="ig-fake-1",
+        external_account_name="Fake IG", access_token_secret_ref="sealed-ref-ig", refresh_token_secret_ref=None,
+        scopes=[],
+    )
+
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user"].id,
+        goal_slug=ctx["goal_slug"], what_to_promote="whiskey caramel launch", mode="guided",
+        target_platforms=["facebook", "instagram"],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user"].id, campaign_name="Whiskey Caramel Launch"
+    )
+
+    facebook_pair = await _seed_platform_pair(
+        db_session, ctx, campaign, product, platform="facebook", sequence_start=90,
+        caption="Facebook caption here.",
+    )
+    instagram_pair = await _seed_platform_pair(
+        db_session, ctx, campaign, product, platform="instagram", sequence_start=92,
+        caption="Instagram caption here.",
+    )
+
+    response = await publish_approved(
+        campaign_id=campaign.id, current_user=ctx["user"], context=_context(ctx),
+        session=db_session, temporal=_FakeTemporalClient(),
+    )
+
+    assert response.skipped == []
+    assert len(response.published) == 2
+    published_by_platform = {}
+    for p in response.published:
+        item = await MarketingRepository(db_session).get_plan_item_by_id(p.plan_item_id)
+        published_by_platform[item.target_platform] = p
+
+    assert set(published_by_platform) == {"facebook", "instagram"}
+    assert published_by_platform["facebook"].plan_item_id == facebook_pair["image_item"].id
+    assert published_by_platform["instagram"].plan_item_id == instagram_pair["image_item"].id
+
+    facebook_plan = await publishing_repo.get_publication_plan_by_id(published_by_platform["facebook"].publication_plan_id)
+    instagram_plan = await publishing_repo.get_publication_plan_by_id(published_by_platform["instagram"].publication_plan_id)
+    assert facebook_plan.platform_connection_id == facebook_connection.id
+    assert instagram_plan.platform_connection_id == instagram_connection.id

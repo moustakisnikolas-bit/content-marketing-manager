@@ -420,7 +420,14 @@ class CommerceService:
             campaign = existing_campaign
 
         sequence_number = len(await marketing_repo.list_plan_items_for_campaign(campaign.id))
-        target_platform = target_platforms[0] if target_platforms else None
+        # One full text(+image) pair per product PER selected platform — a
+        # product targeting both Facebook and Instagram gets two
+        # independent pairs, each with its own generation/approval/publish
+        # lifecycle, since a CampaignPlanItem/PublicationPlan is inherently
+        # single-platform throughout the rest of this codebase. [None] when
+        # nothing was selected preserves the pre-existing "no platform set"
+        # behavior (still exercised by callers that pass target_platforms=[]).
+        platforms: list[str | None] = list(target_platforms) if target_platforms else [None]
 
         prepared_items: list[BulkPlanItemPrepared] = []
         failed_product_ids: list[uuid.UUID] = []
@@ -434,44 +441,46 @@ class CommerceService:
                 failed_product_ids.append(product_id)
                 continue
 
-            sequence_number += 1
             content_title = _strip_product_size(product.title)
-            text_brief = _build_text_brief(
-                product_title=content_title, product_line_description=product_line_description,
-                campaign_description=description, recent_captions=recent_captions,
-                recent_rejection_feedback=recent_rejection_feedback, learned_deletions=learned_deletions,
-            )
-            text_item = await marketing_repo.create_plan_item(
-                campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
-                brief_text=text_brief, target_platform=target_platform,
-                product_id=product.id, content_type="text",
-            )
-            prepared_items.append(
-                BulkPlanItemPrepared(plan_item=text_item, prepared=await marketing_service.prepare_item_generation(text_item))
-            )
+            reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
 
-            if generate_images:
+            for target_platform in platforms:
                 sequence_number += 1
-                # Preview only — the brief actually used for generation is
-                # rebuilt from scratch by prepare_paired_image_generation()
-                # once the paired text item is approved, re-reading the
-                # product's photo fresh at that point rather than trusting
-                # whatever it looked like right now. No ContentItem/
-                # GenerationJob/workflow starts for this item here — it
-                # stays "pending" until that approval (or a manual Start,
-                # gated the same way) dispatches it.
-                reference_image_url = (
-                    min(product.assets, key=lambda a: a.position).url if product.assets else None
+                text_brief = _build_text_brief(
+                    product_title=content_title, product_line_description=product_line_description,
+                    campaign_description=description, recent_captions=recent_captions,
+                    recent_rejection_feedback=recent_rejection_feedback, learned_deletions=learned_deletions,
                 )
-                image_brief = _build_image_edit_prompt(
-                    product_title=content_title, campaign_description=description,
-                    has_reference_image=reference_image_url is not None,
+                text_item = await marketing_repo.create_plan_item(
+                    campaign_id=campaign.id, sequence_number=sequence_number, title=product.title,
+                    brief_text=text_brief, target_platform=target_platform,
+                    product_id=product.id, content_type="text",
                 )
-                await marketing_repo.create_plan_item(
-                    campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
-                    brief_text=image_brief, target_platform=target_platform,
-                    product_id=product.id, content_type="image",
+                prepared_items.append(
+                    BulkPlanItemPrepared(
+                        plan_item=text_item, prepared=await marketing_service.prepare_item_generation(text_item)
+                    )
                 )
+
+                if generate_images:
+                    sequence_number += 1
+                    # Preview only — the brief actually used for generation is
+                    # rebuilt from scratch by prepare_paired_image_generation()
+                    # once the paired text item is approved, re-reading the
+                    # product's photo fresh at that point rather than trusting
+                    # whatever it looked like right now. No ContentItem/
+                    # GenerationJob/workflow starts for this item here — it
+                    # stays "pending" until that approval (or a manual Start,
+                    # gated the same way) dispatches it.
+                    image_brief = _build_image_edit_prompt(
+                        product_title=content_title, campaign_description=description,
+                        has_reference_image=reference_image_url is not None,
+                    )
+                    await marketing_repo.create_plan_item(
+                        campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
+                        brief_text=image_brief, target_platform=target_platform,
+                        product_id=product.id, content_type="image",
+                    )
 
         await self._audit.record(
             event_type="commerce.bulk_product_campaign_prepared",

@@ -510,6 +510,89 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     assert without_reference.brief_text == "Candle B. 20% off this week"
 
 
+async def test_bulk_plan_items_creates_a_pair_per_target_platform(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=["facebook", "instagram"], campaign_id=None, generate_images=True,
+    )
+
+    assert result.failed_product_ids == []
+    # One dispatched text item per platform (image items stay preview-only
+    # pending rows, same as the single-platform case).
+    assert len(result.prepared_items) == 2
+    assert {p.plan_item.target_platform for p in result.prepared_items} == {"facebook", "instagram"}
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    assert len(items) == 4  # 1 product x 2 platforms x (text + image)
+
+    by_platform: dict[str, dict[str, object]] = {}
+    for item in items:
+        by_platform.setdefault(item.target_platform, {})[item.content_type] = item
+    assert set(by_platform) == {"facebook", "instagram"}
+    for platform_items in by_platform.values():
+        assert set(platform_items) == {"text", "image"}
+        assert platform_items["text"].product_id == candle_a.id
+        assert platform_items["image"].product_id == candle_a.id
+
+
+async def test_approving_text_dispatches_only_the_same_platform_image(db_session: AsyncSession) -> None:
+    """A product with pairs for both Facebook and Instagram — approving
+    Instagram's text must dispatch Instagram's image, never Facebook's,
+    even though Facebook's pair was created first (lower sequence_number,
+    so it'd be the first "pending" image _maybe_dispatch_paired_image()
+    would find without the target_platform match added alongside this
+    multi-platform support)."""
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=["facebook", "instagram"], campaign_id=None, generate_images=True,
+    )
+    instagram_prepared = next(p for p in result.prepared_items if p.plan_item.target_platform == "instagram")
+
+    creation_repo = CreationRepository(db_session)
+    marketing_repo = MarketingRepository(db_session)
+    instagram_job = await creation_repo.create_generation_job(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        content_item_id=instagram_prepared.prepared.content_item_id, recipe_id=instagram_prepared.prepared.recipe_id,
+        requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+        brief_text=instagram_prepared.prepared.brief_text,
+    )
+    await marketing_repo.link_plan_item_generation(
+        instagram_prepared.plan_item, content_item_id=instagram_prepared.prepared.content_item_id,
+        generation_job_id=instagram_job.id,
+    )
+    await creation_repo.update_job_status(instagram_job, "awaiting_review")
+    await creation_repo.set_job_workflow_id(instagram_job, f"generation-{instagram_job.id}")
+    await db_session.commit()
+
+    user = await db_session.get(User, ctx["user_id"])
+    temporal = _FakeTemporalClient()
+    await review_generation_job(
+        job_id=instagram_job.id, body=ReviewRequest(decision="approved", revision_id=uuid.uuid4(), comment=None),
+        current_user=user, context=_context(ctx), session=db_session, temporal=temporal,
+    )
+
+    items_after = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    facebook_image = next(i for i in items_after if i.target_platform == "facebook" and i.content_type == "image")
+    instagram_image = next(i for i in items_after if i.target_platform == "instagram" and i.content_type == "image")
+
+    assert instagram_image.status == "generating"
+    assert instagram_image.generation_job_id is not None
+    assert facebook_image.status == "pending"
+    assert facebook_image.generation_job_id is None
+    assert len(temporal.started) == 1
+
+
 async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     service, products = await _seed_two_products(db_session, ctx)

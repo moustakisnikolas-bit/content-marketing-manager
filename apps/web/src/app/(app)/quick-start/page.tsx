@@ -6,6 +6,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ProductPicker } from "@/components/product-picker";
 import { SelectableList } from "@/components/selectable-list";
 import { WooCommerceConnectForm } from "@/components/woocommerce-connect-form";
@@ -14,10 +15,11 @@ import { ApiError } from "@/lib/api-client";
 import { POST_OAUTH_REDIRECT_KEY } from "@/lib/oauth-redirect";
 import { cn } from "@/lib/utils";
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
 interface WizardState {
   connectedPlatforms: Platform[];
+  targetPlatforms: Platform[];
   connectedStore: boolean;
   campaignId: string | null;
   goalSlug: string;
@@ -111,7 +113,61 @@ function ConnectStep({ onContinue }: { onContinue: () => void }) {
   );
 }
 
-// ---------- Step 2: Campaign ----------
+// ---------- Step 2: Platforms ----------
+
+function PlatformsStep({
+  wizard,
+  setWizard,
+  onContinue,
+}: {
+  wizard: WizardState;
+  setWizard: (update: Partial<WizardState>) => void;
+  onContinue: () => void;
+}) {
+  const toggle = (platform: Platform) => {
+    const isSelected = wizard.targetPlatforms.includes(platform);
+    setWizard({
+      targetPlatforms: isSelected
+        ? wizard.targetPlatforms.filter((p) => p !== platform)
+        : [...wizard.targetPlatforms, platform],
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Where should this post?</CardTitle>
+        <CardDescription>
+          Pick at least one connected platform. Each one gets its own generated post and its own review.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {wizard.connectedPlatforms.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No platforms connected yet — go back and connect Facebook or Instagram first.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {wizard.connectedPlatforms.map((platform) => (
+              <label
+                key={platform}
+                className="flex cursor-pointer items-center gap-3 rounded-md border border-border p-3 text-sm capitalize"
+              >
+                <Checkbox checked={wizard.targetPlatforms.includes(platform)} onCheckedChange={() => toggle(platform)} />
+                {platform}
+              </label>
+            ))}
+          </div>
+        )}
+        <Button onClick={onContinue} disabled={wizard.targetPlatforms.length === 0}>
+          Continue
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------- Step 3: Campaign ----------
 
 function CampaignStep({
   wizard,
@@ -161,7 +217,7 @@ function CampaignStep({
   );
 }
 
-// ---------- Step 3: What are you promoting ----------
+// ---------- Step 4: What are you promoting ----------
 
 function PromoteStep({
   wizard,
@@ -284,7 +340,7 @@ function PromoteStep({
   );
 }
 
-// ---------- Step 4: Products ----------
+// ---------- Step 5: Products ----------
 
 function ProductsStep({
   wizard,
@@ -323,7 +379,7 @@ function ProductsStep({
   );
 }
 
-// ---------- Step 5: Review & Launch ----------
+// ---------- Step 6: Review & Launch ----------
 
 function ReviewLaunchStep({ wizard }: { wizard: WizardState }) {
   const router = useRouter();
@@ -339,7 +395,7 @@ function ReviewLaunchStep({ wizard }: { wizard: WizardState }) {
         product_ids: wizard.selectedProductIds,
         description: wizard.whatToPromote,
         goal_slug: wizard.goalSlug,
-        target_platforms: wizard.connectedPlatforms,
+        target_platforms: wizard.targetPlatforms,
         campaign_id: wizard.campaignId,
         generate_images: true,
       });
@@ -369,6 +425,10 @@ function ReviewLaunchStep({ wizard }: { wizard: WizardState }) {
           <p className="mt-1 text-sm text-muted-foreground">{wizard.whatToPromote}</p>
         </div>
         <div>
+          <p className="text-sm font-medium">Platforms</p>
+          <p className="mt-1 text-sm capitalize text-muted-foreground">{wizard.targetPlatforms.join(", ")}</p>
+        </div>
+        <div>
           <p className="text-sm font-medium">{selectedProducts.length} product(s)</p>
           <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto text-sm text-muted-foreground">
             {selectedProducts.map((p) => (
@@ -390,6 +450,7 @@ export default function QuickStartPage() {
   const [step, setStep] = useState<Step>(1);
   const [wizard, setWizardState] = useState<WizardState>({
     connectedPlatforms: [],
+    targetPlatforms: [],
     connectedStore: false,
     campaignId: null,
     goalSlug: "brand_awareness",
@@ -408,6 +469,10 @@ export default function QuickStartPage() {
     const connectedStore = (stores?.length ?? 0) > 0;
     setWizard({
       connectedPlatforms,
+      // Defaults to every connected platform pre-checked (matches the old
+      // silent behavior) — PlatformsStep lets the user narrow it down,
+      // e.g. to just Instagram.
+      targetPlatforms: connectedPlatforms,
       connectedStore,
       goalSlug: connectedStore ? "more_sales" : "brand_awareness",
     });
@@ -418,14 +483,15 @@ export default function QuickStartPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Quick Start</h1>
-        <p className="text-muted-foreground">Step {step} of 5</p>
+        <p className="text-muted-foreground">Step {step} of 6</p>
       </div>
 
       {step === 1 && <ConnectStep onContinue={goToStep2} />}
-      {step === 2 && <CampaignStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(3)} />}
-      {step === 3 && <PromoteStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(4)} />}
-      {step === 4 && <ProductsStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(5)} />}
-      {step === 5 && <ReviewLaunchStep wizard={wizard} />}
+      {step === 2 && <PlatformsStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(3)} />}
+      {step === 3 && <CampaignStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(4)} />}
+      {step === 4 && <PromoteStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(5)} />}
+      {step === 5 && <ProductsStep wizard={wizard} setWizard={setWizard} onContinue={() => setStep(6)} />}
+      {step === 6 && <ReviewLaunchStep wizard={wizard} />}
     </div>
   );
 }
