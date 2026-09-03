@@ -403,14 +403,16 @@ function SocialStoryMockup({ pageName, imageUrl }: { pageName: string; imageUrl:
 // + caption for this plan item (and its paired text/image sibling) so the
 // preview shows the real post, not just a title and a timestamp.
 function PublishPreviewItem({
-  pageName, planItem, textItem, scheduledFor, willCreateStory,
+  pageName, planItem, textItem, scheduledFor, willCreateStory, onDelete,
 }: {
   pageName: string;
   planItem: CampaignPlanItemOut;
   textItem: CampaignPlanItemOut | null;
   scheduledFor: string;
   willCreateStory: boolean;
+  onDelete: () => Promise<void>;
 }) {
+  const [deleting, setDeleting] = useState(false);
   const isImagePost = planItem.content_type === "image";
   // A text-only product (no paired image) publishes planItem itself as the
   // post — its own content is the caption. Otherwise the caption comes
@@ -435,9 +437,30 @@ function PublishPreviewItem({
   });
   const caption = captionQuery.data?.revisions.at(-1)?.text_body ?? planItem.title;
 
+  const handleDelete = async () => {
+    if (
+      !window.confirm(
+        "Delete this permanently? This can't be undone — any generated image or text stays saved, it just won't be published or show here anymore.",
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await onDelete();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="rounded-md border border-border p-4">
-      <p className="mb-1 text-sm font-medium">{planItem.title}</p>
+      <div className="mb-1 flex items-start justify-between gap-2">
+        <p className="text-sm font-medium">{planItem.title}</p>
+        <Button size="sm" variant="destructive" disabled={deleting} onClick={handleDelete}>
+          {deleting ? "Deleting..." : "Delete"}
+        </Button>
+      </div>
       <p className="mb-3 text-xs text-muted-foreground">
         Scheduled for {new Date(scheduledFor).toLocaleString()}
         {willCreateStory && " · a Story will also be created for review"}
@@ -585,6 +608,22 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
     }
   };
 
+  // Same, but from the pre-publish preview — also drops the entry out of
+  // the already-fetched publishPreview state so the card disappears
+  // immediately instead of waiting on a fresh preview call.
+  const handleDeleteFromPublishPreview = async (previewPlanItemId: string, items: CampaignPlanItemOut[]) => {
+    try {
+      await Promise.all(items.map((i) => api.removePlanItem(campaignId, i.id)));
+      toast.success(items.length > 1 ? "Deleted both" : "Deleted");
+      setPublishPreview((prev) =>
+        prev ? { ...prev, published: prev.published.filter((p) => p.plan_item_id !== previewPlanItemId) } : prev,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+    } catch {
+      toast.error("Couldn't delete this item.");
+    }
+  };
+
   if (!detail) return null;
 
   const reviewableItems = detail.plan_items.filter((i) => i.status === "awaiting_review");
@@ -685,6 +724,12 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
                       textItem={textItem}
                       scheduledFor={p.scheduled_for}
                       willCreateStory={p.will_create_story}
+                      onDelete={() =>
+                        handleDeleteFromPublishPreview(
+                          p.plan_item_id,
+                          textItem ? [planItem, textItem] : [planItem],
+                        )
+                      }
                     />
                   );
                 })}
