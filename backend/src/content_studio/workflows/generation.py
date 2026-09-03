@@ -119,11 +119,13 @@ class GenerationWorkflow:
         dispatch = await workflow.execute_activity(
             dispatch_generation,
             input.job_id,
-            # 240s, not 120 — an image generation now runs a second,
+            # 300s, not 120 — an image generation now runs a second,
             # sequential Replicate prediction (the resolution upscale pass
             # in adapters/ai_image/replicate.py), each with its own ~60s
-            # poll ceiling plus network overhead; 120s left no headroom.
-            start_to_close_timeout=timedelta(seconds=240),
+            # poll ceiling, plus that pass's own 429 retry backoff (up to
+            # 30s — confirmed live that its rate limit is tight enough to
+            # hit on every single call); 120s left no headroom at all.
+            start_to_close_timeout=timedelta(seconds=300),
             retry_policy=_STANDARD_RETRY,
         )
         if not dispatch["ok"]:

@@ -76,13 +76,26 @@ class ReplicateImageAdapter:
                 return raw_bytes
 
     async def _upscale(self, client: httpx.AsyncClient, image_bytes: bytes, headers: dict) -> bytes:
+        # This model's own rate limit is tight enough (confirmed live:
+        # ratelimit-remaining hit 0 after a single prior call, resetting in
+        # ~10s) that a 429 here is the expected case, not an edge case —
+        # every image generation makes a Kontext call immediately followed
+        # by this one. One retry after the server's own reset window turns
+        # most of those into a real upscale instead of a silent skip.
         data_uri = f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+        payload = {"input": {"image": data_uri, "scale": _UPSCALE_SCALE, "face_enhance": False}}
+
         response = await client.post(
-            f"https://api.replicate.com/v1/models/{_UPSCALE_MODEL}/predictions",
-            headers=headers,
-            json={"input": {"image": data_uri, "scale": _UPSCALE_SCALE, "face_enhance": False}},
+            f"https://api.replicate.com/v1/models/{_UPSCALE_MODEL}/predictions", headers=headers, json=payload
         )
+        if response.status_code == 429:
+            reset_seconds = min(int(response.headers.get("ratelimit-reset", 10)), 30)
+            await asyncio.sleep(reset_seconds)
+            response = await client.post(
+                f"https://api.replicate.com/v1/models/{_UPSCALE_MODEL}/predictions", headers=headers, json=payload
+            )
         response.raise_for_status()
+
         prediction = await self._await_completion(client, response.json(), headers)
         output = prediction["output"]
         upscaled_url = output[0] if isinstance(output, list) else output
