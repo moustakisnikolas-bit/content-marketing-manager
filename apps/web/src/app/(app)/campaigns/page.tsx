@@ -83,6 +83,7 @@ function PlanItemReviewPanel({
   onNavigate,
   onDecided,
   onClose,
+  onDelete,
 }: {
   campaignId: string;
   // Usually one item. When a text+image pair for the same product/platform
@@ -94,9 +95,11 @@ function PlanItemReviewPanel({
   onNavigate: (direction: "previous" | "next") => void;
   onDecided: () => void;
   onClose: () => void;
+  onDelete: () => Promise<void>;
 }) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [instructions, setInstructions] = useState("");
   const isImageLike = (i: CampaignPlanItemOut) => i.content_type === "image" || i.content_type === "story";
   const imageItem = items.find(isImageLike) ?? null;
@@ -169,6 +172,26 @@ function PlanItemReviewPanel({
   const revisionFor = (item: CampaignPlanItemOut) => (item.id === primary.id ? primaryRevision : secondaryRevision);
   const queryFor = (item: CampaignPlanItemOut) => (item.id === primary.id ? primaryQuery : secondaryQuery);
 
+  const handleDelete = async () => {
+    if (
+      !window.confirm(
+        secondary
+          ? "Delete both of these permanently? This can't be undone — any generated image or text stays saved, it just won't show here anymore."
+          : "Delete this item permanently? This can't be undone — any generated image or text stays saved, it just won't show here anymore.",
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await onDelete();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const anyBusy = busy || regenerating || deleting;
+
   return (
     <Card className="border-primary/30">
       <CardHeader>
@@ -179,9 +202,14 @@ function PlanItemReviewPanel({
               {items.map((i) => i.content_type).join(" + ")} {primary.target_platform && `· ${primary.target_platform}`}
             </CardDescription>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Close
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="destructive" size="sm" disabled={anyBusy} onClick={handleDelete}>
+              {deleting ? "Deleting..." : secondary ? "Delete both" : "Delete"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -223,7 +251,7 @@ function PlanItemReviewPanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={regenerating || busy || !promptDraft.trim()}
+                disabled={anyBusy || !promptDraft.trim()}
                 onClick={handleRegenerate}
               >
                 {regenerating ? "Recreating..." : "Recreate image"}
@@ -254,13 +282,13 @@ function PlanItemReviewPanel({
             </Button>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" disabled={busy || regenerating || !ready} onClick={() => handleReview("approved")}>
+            <Button size="sm" disabled={anyBusy || !ready} onClick={() => handleReview("approved")}>
               {secondary ? "Approve both" : "Approve"}
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || regenerating || !ready}
+              disabled={anyBusy || !ready}
               onClick={() => handleReview("rejected")}
             >
               {secondary ? "Reject both" : "Reject"}
@@ -543,6 +571,20 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
     }
   };
 
+  // Delete straight from the review panel — confirmation already happened
+  // there, so this just does the work (one or two items, for a combined
+  // text+image review group) and closes the panel.
+  const handleDeleteReviewGroup = async (items: CampaignPlanItemOut[]) => {
+    try {
+      await Promise.all(items.map((i) => api.removePlanItem(campaignId, i.id)));
+      toast.success(items.length > 1 ? "Deleted both" : "Deleted");
+      setReviewingId(null);
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+    } catch {
+      toast.error("Couldn't delete this item.");
+    }
+  };
+
   if (!detail) return null;
 
   const reviewableItems = detail.plan_items.filter((i) => i.status === "awaiting_review");
@@ -684,6 +726,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
           onNavigate={handleNavigate}
           onDecided={handleDecided}
           onClose={() => setReviewingId(null)}
+          onDelete={() => handleDeleteReviewGroup(reviewingGroup)}
         />
       )}
 
