@@ -941,6 +941,53 @@ async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(
     )
 
 
+async def test_bulk_plan_items_text_brief_includes_product_link_but_image_brief_doesnt(
+    db_session: AsyncSession,
+) -> None:
+    """The product's store link only ever appears in the caption brief —
+    never the image brief, and (per test_story_hook.py) never the Story
+    brief either, since Stories can't carry a real clickable link and
+    burning a URL into AI-rendered pixels isn't reliable."""
+    from content_studio.ports.store_connector import ProductData, ProductPage
+
+    ctx = await _seed_workspace(db_session)
+    pages = [
+        ProductPage(
+            products=[
+                ProductData(
+                    external_product_id="p1", title="Whiskey Caramel", description="d1", price="10.00",
+                    currency="USD", status="active",
+                    raw_payload={"permalink": "https://ceri.gr/shop/wax-melts/whiskey-caramel/"},
+                ),
+            ],
+            next_cursor=None,
+        ),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = _service(db_session, adapter=adapter, secrets=FakeSecrets())
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="woocommerce", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+    repo = CommerceRepository(db_session)
+    products = await repo.list_products_for_connection(connection.id)
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[products[0].id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "https://ceri.gr/shop/wax-melts/whiskey-caramel/" in text_item.brief_text
+    assert "https://ceri.gr" not in image_item.brief_text
+
+
 async def test_bulk_plan_items_text_briefs_include_rejection_feedback_but_image_briefs_dont(
     db_session: AsyncSession,
 ) -> None:

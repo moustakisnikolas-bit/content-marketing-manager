@@ -23,7 +23,12 @@ async def test_derive_story_hook_keeps_a_short_caption_as_is() -> None:
     assert derive_story_hook("Whiskey Caramel is back!") == "Whiskey Caramel is back!"
 
 
-async def test_build_story_brief_strips_size_suffix_and_includes_permalink() -> None:
+async def test_build_story_brief_strips_size_suffix_and_never_includes_a_link() -> None:
+    """Stories can't carry a real clickable link (no sticker support via
+    Instagram's Content Publishing API), and burning a URL into
+    AI-rendered pixels isn't reliable either — so the brief never includes
+    one, even when the product has a permalink. The link lives in the
+    post's own caption instead (see _build_text_brief)."""
     product = SimpleNamespace(
         title="Whiskey Caramel 200γρ.",
         raw_payload={"permalink": "https://ceri.gr/shop/wax-melts/whiskey-caramel/"},
@@ -33,7 +38,7 @@ async def test_build_story_brief_strips_size_suffix_and_includes_permalink() -> 
 
     assert "200γρ" not in brief
     assert "Whiskey Caramel" in brief
-    assert "https://ceri.gr/shop/wax-melts/whiskey-caramel/" in brief
+    assert "https://ceri.gr" not in brief
 
 
 async def test_build_story_brief_handles_missing_permalink() -> None:

@@ -479,6 +479,7 @@ class CommerceService:
                 continue
 
             content_title = _strip_product_size(product.title)
+            product_url = (product.raw_payload or {}).get("permalink") if isinstance(product.raw_payload, dict) else None
             reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
             # A product's image is generated once and shared across every
             # platform it targets (Facebook and Instagram show the same
@@ -493,7 +494,7 @@ class CommerceService:
                 text_brief = _build_text_brief(
                     product_title=content_title, product_line_description=product_line_description,
                     brand_pillars_description=brand_pillars_description,
-                    campaign_description=description, recent_captions=recent_captions,
+                    campaign_description=description, product_url=product_url, recent_captions=recent_captions,
                     recent_rejection_feedback=recent_rejection_feedback, learned_deletions=learned_deletions,
                 )
                 text_item = await marketing_repo.create_plan_item(
@@ -648,6 +649,7 @@ def _build_text_brief(
     product_line_description: str | None,
     brand_pillars_description: str | None,
     campaign_description: str,
+    product_url: str | None,
     recent_captions: list[str],
     recent_rejection_feedback: list[str],
     learned_deletions: list[str],
@@ -664,6 +666,11 @@ def _build_text_brief(
     if brand_pillars_description:
         lines.append(f"How we sell — apply this framework: {brand_pillars_description}")
     lines.append(f"This post should focus on: {campaign_description}")
+    if product_url:
+        # The only place the product link appears — Stories can't carry a
+        # real clickable link (see build_story_brief), so the caption is
+        # what has to carry it instead.
+        lines.append(f"Include this link so people can buy it: {product_url}")
     if recent_captions:
         lines.append("Match the tone and style of these recent posts we've published:")
         lines.extend(f"- {caption}" for caption in recent_captions[:3])
@@ -692,20 +699,20 @@ def derive_story_hook(caption: str, *, max_length: int = 60) -> str:
 
 def build_story_brief(product: Product, hook_text: str) -> str:
     """Entry point for publish_approved()'s companion-story creation (see
-    api/v1/marketing.py) — keeps the size-suffix-stripping and permalink
-    lookup details local to this module rather than duplicating them at
-    the call site."""
-    product_url = (product.raw_payload or {}).get("permalink") if isinstance(product.raw_payload, dict) else None
-    return _build_story_image_edit_prompt(
-        product_title=_strip_product_size(product.title), hook_text=hook_text, product_url=product_url
-    )
+    api/v1/marketing.py) — keeps the size-suffix-stripping detail local to
+    this module rather than duplicating it at the call site."""
+    return _build_story_image_edit_prompt(product_title=_strip_product_size(product.title), hook_text=hook_text)
 
 
-def _build_story_image_edit_prompt(*, product_title: str, hook_text: str, product_url: str | None) -> str:
-    url_line = f' Include this link as small, readable text near the bottom: "{product_url}".' if product_url else ""
+def _build_story_image_edit_prompt(*, product_title: str, hook_text: str) -> str:
+    # No URL baked into the image — Stories can't carry a real clickable
+    # link (Instagram's Content Publishing API has no sticker support, and
+    # burning a URL into AI-generated pixels as readable Greek text isn't
+    # reliable). The product link lives in the post's own caption instead
+    # (see _build_text_brief's product_url line) — the Story stays visual.
     return (
         f"Keep the product exactly as shown. Overlay this short catchy phrase in bold, clearly readable "
-        f'text near the top of the image: "{hook_text}".{url_line} This is for {product_title}.'
+        f'text near the top of the image: "{hook_text}". This is for {product_title}.'
     )
 
 
