@@ -31,6 +31,13 @@ _REQUESTED_SCOPES = (
     "instagram_basic",
     "instagram_content_publish",
     "instagram_manage_insights",
+    # Confirmed live: deleting Instagram media (delete_post()) 400s with
+    # "does not support this operation" without this scope — Meta's own
+    # docs list it as the specific requirement for IG media DELETE,
+    # separate from instagram_content_publish (which only covers
+    # creating). Existing connections made before this was added won't
+    # have it — reconnecting is required for delete to actually work.
+    "instagram_manage_contents",
 )
 _TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 _POLL_INTERVAL_SECONDS = 2

@@ -1,11 +1,13 @@
 import uuid
 from dataclasses import dataclass
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.modules.analytics.ingestion_service import MetricsIngestionService
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.governance.service import AuditService
+from content_studio.modules.publishing.exceptions import PlatformDeleteRejected
 from content_studio.modules.publishing.models import PlatformConnection
 from content_studio.modules.publishing.repository import PublishingRepository
 from content_studio.ports.object_storage import ObjectStoragePort
@@ -332,7 +334,18 @@ class PublishingService:
             connection = await self._repo.get_connection_by_id(plan.platform_connection_id)
             assert connection is not None
             access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
-            await self._platform_adapter.delete_post(access_token=access_token, external_post_id=external_post_id)
+            try:
+                await self._platform_adapter.delete_post(
+                    access_token=access_token, external_post_id=external_post_id
+                )
+            except httpx.HTTPStatusError as exc:
+                # Confirmed live: this is commonly a missing permission
+                # scope (Instagram delete needs instagram_manage_contents
+                # specifically, separate from instagram_content_publish),
+                # not a transient failure — surface it as its own kind so
+                # the API layer can point the user at reconnecting rather
+                # than a generic retry.
+                raise PlatformDeleteRejected(connection.platform, exc.response.text[:300]) from exc
 
         await self._audit.record(
             event_type="publishing.deleted",

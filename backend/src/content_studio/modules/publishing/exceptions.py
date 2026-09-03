@@ -16,5 +16,17 @@ class PlanNotFound(PublishingError):
     pass
 
 
+class PlatformDeleteRejected(PublishingError):
+    """The platform itself refused to delete the live post (e.g. a missing
+    permission scope, confirmed live for Instagram's instagram_manage_contents)
+    — distinct from a plain network/timeout failure, since the fix is
+    usually "reconnect the account," not "retry."""
+
+    def __init__(self, platform: str, detail: str) -> None:
+        self.platform = platform
+        self.detail = detail
+        super().__init__(f"{platform} refused to delete the post: {detail}")
+
+
 class InvalidOAuthState(PublishingError):
     pass

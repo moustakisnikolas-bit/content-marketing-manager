@@ -9,6 +9,7 @@ from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.creation.generation_service import GenerationService
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.identity.service import IdentityService
+from content_studio.modules.publishing.exceptions import PlatformDeleteRejected
 from content_studio.modules.publishing.repository import PublishingRepository
 from content_studio.modules.publishing.service import PendingAccountSelection, PublishingService
 from content_studio.ports.social_platform import CapabilityResult, ConnectableAccount
@@ -391,4 +392,40 @@ async def test_delete_publication_plan_keeps_the_local_record_when_the_platform_
         await service.delete_publication_plan(plan.id, ctx["user_id"])
 
     # Never leave the app's tracking gone while the real post is still live.
+    assert await repo.get_publication_plan_by_id(plan.id) is not None
+
+
+async def test_delete_publication_plan_wraps_a_platform_rejection_as_a_named_exception(
+    db_session: AsyncSession,
+) -> None:
+    """Regression test for a real production failure (ceri.gr): Instagram
+    delete 400s with "does not support this operation" when the connected
+    account lacks instagram_manage_contents — a distinct, actionable
+    failure (reconnect the account) that the API layer needs to tell
+    apart from a generic/transient error, not a bare httpx exception
+    bubbling up as an unhandled 500."""
+    ctx = await _seed_workspace(db_session)
+    item_id = await _seed_approved_text_item(db_session, ctx)
+
+    platform_adapter = FakeSocialPlatform()
+    service = _service(db_session, platform_adapter=platform_adapter)
+    connection = await service.connect_platform(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="instagram", code="fake-code",
+    )
+    repo = PublishingRepository(db_session)
+    plan = await repo.create_publication_plan(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=item_id,
+        platform_connection_id=connection.id, created_by_user_id=ctx["user_id"], scheduled_for=None,
+    )
+    await db_session.commit()
+    await service.check_capability(plan.id)
+    await service.mark_approved(plan.id, ctx["user_id"])
+    await service.dispatch_publish(plan.id)
+
+    platform_adapter.delete_should_fail_with_platform_error = True
+    with pytest.raises(PlatformDeleteRejected) as exc_info:
+        await service.delete_publication_plan(plan.id, ctx["user_id"])
+    assert exc_info.value.platform == "instagram"
+
     assert await repo.get_publication_plan_by_id(plan.id) is not None

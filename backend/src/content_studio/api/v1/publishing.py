@@ -16,7 +16,7 @@ from content_studio.api.deps import (
 from content_studio.config import get_settings
 from content_studio.correlation import get_correlation_id
 from content_studio.modules.identity.models import User
-from content_studio.modules.publishing.exceptions import InvalidOAuthState
+from content_studio.modules.publishing.exceptions import InvalidOAuthState, PlatformDeleteRejected
 from content_studio.modules.publishing.oauth_state import (
     create_oauth_state,
     create_pending_connection_token,
@@ -306,4 +306,17 @@ async def delete_publication_plan(
 
     adapter = get_platform_adapter(connection.platform)
     service = PublishingService(session, platform_adapter=adapter, secrets=secrets, object_storage=object_storage)
-    await service.delete_publication_plan(plan_id, current_user.id)
+    try:
+        await service.delete_publication_plan(plan_id, current_user.id)
+    except PlatformDeleteRejected as exc:
+        # Surface the platform's own rejection instead of a bare 500 — the
+        # local record deliberately survives this (see
+        # PublishingService.delete_publication_plan), so it's safe to
+        # retry once the underlying cause (commonly: the connected account
+        # is missing a permission scope — reconnecting picks up
+        # newly-requested scopes) is fixed.
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"{exc.platform.capitalize()} refused to delete the live post — try reconnecting your "
+            f"{exc.platform} account, then delete again. ({exc.detail})",
+        ) from exc

@@ -1,5 +1,7 @@
 import uuid
 
+import httpx
+
 from content_studio.ports.social_platform import (
     CapabilityResult,
     ConnectableAccount,
@@ -44,6 +46,12 @@ class FakeSocialPlatform:
         self.published_calls: list[dict] = []
         self.deleted_post_ids: list[str] = []
         self.delete_should_fail = False
+        # Simulates the real, live-confirmed failure mode: the platform
+        # itself rejects the delete (e.g. a missing permission scope) —
+        # distinct from delete_should_fail's generic RuntimeError, so
+        # callers can exercise the httpx.HTTPStatusError-specific handling
+        # in api/v1/publishing.py's delete_publication_plan.
+        self.delete_should_fail_with_platform_error = False
 
     def get_authorization_url(self, *, state: str) -> str:
         return f"https://fake-oauth.test/authorize?state={state}"
@@ -99,6 +107,10 @@ class FakeSocialPlatform:
         return self.post_status
 
     async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
+        if self.delete_should_fail_with_platform_error:
+            request = httpx.Request("DELETE", f"https://graph.facebook.com/v21.0/{external_post_id}")
+            response = httpx.Response(400, request=request, json={"error": {"message": "missing permission"}})
+            raise httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
         if self.delete_should_fail:
             raise RuntimeError("simulated platform delete failure")
         self.deleted_post_ids.append(external_post_id)
