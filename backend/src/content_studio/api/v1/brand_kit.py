@@ -52,6 +52,7 @@ async def create_brand_profile(
     profile = await service.create_profile(
         organization_id=context.organization_id, workspace_id=context.workspace_id, user_id=current_user.id,
         name=body.name, tone_description=body.tone_description, product_line_description=body.product_line_description,
+        brand_pillars_description=body.brand_pillars_description,
         vocabulary=body.vocabulary, colors=body.colors,
         target_audiences=body.target_audiences, default_ctas=body.default_ctas,
     )
@@ -83,6 +84,7 @@ async def update_brand_profile(
         profile = await service.update_profile(
             profile_id, workspace_id=context.workspace_id, name=body.name, tone_description=body.tone_description,
             product_line_description=body.product_line_description,
+            brand_pillars_description=body.brand_pillars_description,
             vocabulary=body.vocabulary, colors=body.colors, target_audiences=body.target_audiences,
             default_ctas=body.default_ctas, is_active=body.is_active,
         )

@@ -155,6 +155,13 @@ class BrandProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # fed into every product's generation prompt, entered once instead of
     # retyped per campaign.
     product_line_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The workspace's own value-selling framework/positioning strategy
+    # (e.g. "sell the experience, not the product; connect it to a real
+    # problem; emphasize convenience") — threaded into every text brief
+    # the same way product_line_description is, so generated captions
+    # consistently reflect how this business actually wants to be sold,
+    # not just what it sells.
+    brand_pillars_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     vocabulary: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     colors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     target_audiences: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

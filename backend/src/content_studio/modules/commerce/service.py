@@ -20,6 +20,7 @@ from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.webhook_signature import verify_signature
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.governance.service import AuditService
+from content_studio.modules.identity.models import BrandProfile
 from content_studio.modules.identity.repository import IdentityRepository
 from content_studio.modules.marketing.exceptions import CampaignNotFound, NoActiveRecipe
 from content_studio.modules.marketing.models import Campaign, CampaignPlanItem, CampaignProposal
@@ -378,8 +379,9 @@ class CommerceService:
         """The DB-writing half of the Quick Start bulk product flow — one
         text item (and optionally one image item) per product. Text briefs
         combine the product's own title, the workspace's persistent brand
-        context (BrandProfile.product_line_description), this batch's
-        shared `description`, and a style reference sampled once from the
+        context (BrandProfile.product_line_description and
+        brand_pillars_description — what we sell and how we sell it), this
+        batch's shared `description`, and a style reference sampled once from the
         workspace's own recently-published Meta posts (best-effort — a
         missing connection or API failure just means no style reference,
         never blocks generation). Does NOT start Temporal workflows for the
@@ -392,7 +394,9 @@ class CommerceService:
         marketing_service = MarketingService(self._session)
         marketing_repo = MarketingRepository(self._session)
 
-        product_line_description = await self._get_product_line_description(workspace_id)
+        active_brand_profile = await self._get_active_brand_profile(workspace_id)
+        product_line_description = active_brand_profile.product_line_description if active_brand_profile else None
+        brand_pillars_description = active_brand_profile.brand_pillars_description if active_brand_profile else None
         recent_captions = await self._get_recent_post_captions(workspace_id)
         creation_repo = CreationRepository(self._session)
         recent_rejection_feedback = await creation_repo.list_recent_rejection_comments_for_workspace(workspace_id)
@@ -448,6 +452,7 @@ class CommerceService:
                 sequence_number += 1
                 text_brief = _build_text_brief(
                     product_title=content_title, product_line_description=product_line_description,
+                    brand_pillars_description=brand_pillars_description,
                     campaign_description=description, recent_captions=recent_captions,
                     recent_rejection_feedback=recent_rejection_feedback, learned_deletions=learned_deletions,
                 )
@@ -550,10 +555,9 @@ class CommerceService:
             raise ProductNotFound(str(product_id))
         return product
 
-    async def _get_product_line_description(self, workspace_id: uuid.UUID) -> str | None:
+    async def _get_active_brand_profile(self, workspace_id: uuid.UUID) -> BrandProfile | None:
         profiles = await IdentityRepository(self._session).list_brand_profiles_for_workspace(workspace_id)
-        active = next((p for p in profiles if p.is_active), profiles[0] if profiles else None)
-        return active.product_line_description if active else None
+        return next((p for p in profiles if p.is_active), profiles[0] if profiles else None)
 
     async def _get_recent_post_captions(self, workspace_id: uuid.UUID, *, limit: int = 5) -> list[str]:
         # Best-effort style reference — no connection, an unreachable Meta
@@ -594,6 +598,7 @@ def _build_text_brief(
     *,
     product_title: str,
     product_line_description: str | None,
+    brand_pillars_description: str | None,
     campaign_description: str,
     recent_captions: list[str],
     recent_rejection_feedback: list[str],
@@ -608,6 +613,8 @@ def _build_text_brief(
     ]
     if product_line_description:
         lines.append(f"About our business: {product_line_description}")
+    if brand_pillars_description:
+        lines.append(f"How we sell — apply this framework: {brand_pillars_description}")
     lines.append(f"This post should focus on: {campaign_description}")
     if recent_captions:
         lines.append("Match the tone and style of these recent posts we've published:")

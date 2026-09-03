@@ -181,17 +181,28 @@ class MarketingRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_plan_item_by_generation_job_id(self, generation_job_id: uuid.UUID) -> CampaignPlanItem | None:
+    async def list_plan_items_by_generation_job_id(self, generation_job_id: uuid.UUID) -> list[CampaignPlanItem]:
+        # A plain list, not scalar_one_or_none() — a shared product image
+        # (see build_bulk_plan_items/_maybe_dispatch_paired_image: one
+        # platform's text approval reuses another platform's already-
+        # generated image instead of regenerating it) means more than one
+        # plan item can legitimately reference the same generation_job_id.
+        # Every call site must handle 0, 1, or many matches.
         result = await self._session.execute(
             select(CampaignPlanItem).where(CampaignPlanItem.generation_job_id == generation_job_id)
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
 
     async def get_plan_item_by_content_item_id(self, content_item_id: uuid.UUID) -> CampaignPlanItem | None:
         # content_item_id stays stable across regenerations (a new job
         # reuses the same content_item_id), unlike generation_job_id — the
         # right key to resolve "which plan item does this revision belong
         # to" regardless of how many regen rounds it's been through.
+        # scalar_one_or_none() is still safe here: unlike images, text
+        # content is never shared across platforms (only image generation
+        # is reused — see list_plan_items_by_generation_job_id above), and
+        # this method's one caller (edit_revision_text) only ever reaches
+        # it for a text revision.
         result = await self._session.execute(
             select(CampaignPlanItem).where(CampaignPlanItem.content_item_id == content_item_id)
         )

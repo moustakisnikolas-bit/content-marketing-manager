@@ -662,6 +662,84 @@ async def test_approving_second_platform_text_reuses_first_platforms_generated_i
     assert instagram_image_after.generation_job_id == facebook_image_after.generation_job_id
 
 
+async def test_rejecting_shared_image_recreates_it_for_every_platform_sharing_it(
+    db_session: AsyncSession,
+) -> None:
+    """Facebook and Instagram share one generated image for the same
+    product. Rejecting it on Facebook must recreate it for Instagram too —
+    not leave Instagram's item stuck pointing at the rejected job — since
+    the user only ever sees/rejects it once (via whichever platform's
+    review panel they happened to open)."""
+    ctx = await _seed_workspace(db_session)
+    service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+        target_platforms=["facebook", "instagram"], campaign_id=None, generate_images=True,
+    )
+    facebook_prepared = next(p for p in result.prepared_items if p.plan_item.target_platform == "facebook")
+    instagram_prepared = next(p for p in result.prepared_items if p.plan_item.target_platform == "instagram")
+
+    creation_repo = CreationRepository(db_session)
+    marketing_repo = MarketingRepository(db_session)
+    user = await db_session.get(User, ctx["user_id"])
+
+    async def _approve_text(prepared) -> None:
+        job = await creation_repo.create_generation_job(
+            organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+            content_item_id=prepared.prepared.content_item_id, recipe_id=prepared.prepared.recipe_id,
+            requested_by_user_id=ctx["user_id"], subscription_id=ctx["subscription_id"],
+            brief_text=prepared.prepared.brief_text,
+        )
+        await marketing_repo.link_plan_item_generation(
+            prepared.plan_item, content_item_id=prepared.prepared.content_item_id, generation_job_id=job.id
+        )
+        await creation_repo.update_job_status(job, "awaiting_review")
+        await creation_repo.set_job_workflow_id(job, f"generation-{job.id}")
+        await db_session.commit()
+        await review_generation_job(
+            job_id=job.id, body=ReviewRequest(decision="approved", revision_id=uuid.uuid4(), comment=None),
+            current_user=user, context=_context(ctx), session=db_session, temporal=_FakeTemporalClient(),
+        )
+
+    await _approve_text(facebook_prepared)
+    await _approve_text(instagram_prepared)
+
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    facebook_image = next(i for i in items if i.target_platform == "facebook" and i.content_type == "image")
+    instagram_image = next(i for i in items if i.target_platform == "instagram" and i.content_type == "image")
+    shared_job_id = facebook_image.generation_job_id
+    assert instagram_image.generation_job_id == shared_job_id  # sanity check on the setup
+
+    # Mark the shared job awaiting review (as if it had actually finished
+    # generating), then reject it via Facebook's plan item.
+    await creation_repo.update_job_status(
+        await creation_repo.get_generation_job_by_id(shared_job_id), "awaiting_review"
+    )
+    await creation_repo.set_job_workflow_id(
+        await creation_repo.get_generation_job_by_id(shared_job_id), f"generation-{shared_job_id}"
+    )
+    await db_session.commit()
+
+    result_reject = await review_generation_job(
+        job_id=shared_job_id, body=ReviewRequest(decision="rejected", revision_id=uuid.uuid4(), comment="try again"),
+        current_user=user, context=_context(ctx), session=db_session, temporal=_FakeTemporalClient(),
+    )
+    new_job_id = result_reject["new_job_id"]
+    assert new_job_id is not None
+    assert new_job_id != str(shared_job_id)
+
+    refreshed = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    refreshed_facebook = next(i for i in refreshed if i.target_platform == "facebook" and i.content_type == "image")
+    refreshed_instagram = next(i for i in refreshed if i.target_platform == "instagram" and i.content_type == "image")
+
+    assert str(refreshed_facebook.generation_job_id) == new_job_id
+    assert str(refreshed_instagram.generation_job_id) == new_job_id
+    assert refreshed_facebook.content_item_id == refreshed_instagram.content_item_id
+
+
 async def test_bulk_plan_items_appends_to_existing_campaign_without_images(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     service, products = await _seed_two_products(db_session, ctx)
@@ -721,6 +799,7 @@ async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(
     await identity_repo.create_brand_profile(
         workspace_id=ctx["workspace_id"], name="Default", tone_description=None,
         product_line_description="Soy scented candles, room diffusers, car diffusers, plant-based wax melts",
+        brand_pillars_description="Sell the experience, not the product.",
         vocabulary=[], colors=[], target_audiences=[], default_ctas=[],
     )
 
@@ -749,12 +828,14 @@ async def test_bulk_plan_items_briefs_include_brand_context_and_style_reference(
 
     assert "Soy scented candles" in text_item.brief_text
     assert "20% off this week" in text_item.brief_text
+    assert "Sell the experience, not the product." in text_item.brief_text
     # StubSocialPlatformAdapter.list_recent_posts() is what get_social_platform_adapter()
     # falls back to with no real Meta app configured (the case in tests) — its
     # canned captions prove the whole lookup->unseal->adapter->extract chain works.
     assert "New arrivals just dropped" in text_item.brief_text
     # Candle A has a synced photo — image brief is the edit-style prompt, not a re-description.
     assert "20% off this week" in image_item.brief_text
+    assert "Sell the experience" not in image_item.brief_text
     assert image_item.brief_text == (
         "Keep the product exactly as shown. Restyle the background to a scene that evokes "
         "'Candle A': 20% off this week"

@@ -5,11 +5,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.api.deps import WorkspaceContext
-from content_studio.api.v1.content import review_generation_job
+from content_studio.api.v1.content import regenerate_generation_job, review_generation_job
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.creation.repository import CreationRepository
-from content_studio.modules.creation.schemas import ReviewRequest
+from content_studio.modules.creation.schemas import RegenerateJobRequest, ReviewRequest
 from content_studio.modules.identity.service import IdentityService
 from content_studio.modules.marketing.repository import MarketingRepository
 from content_studio.modules.marketing.service import MarketingService
@@ -192,9 +192,9 @@ async def test_reject_repoints_linked_plan_item_to_new_job(db_session: AsyncSess
         plan_item, content_item_id=seeded["item"].id, generation_job_id=seeded["job"].id
     )
 
-    found_before = await marketing_repo.get_plan_item_by_generation_job_id(seeded["job"].id)
-    assert found_before is not None
-    assert found_before.id == plan_item.id
+    found_before = await marketing_repo.list_plan_items_by_generation_job_id(seeded["job"].id)
+    assert len(found_before) == 1
+    assert found_before[0].id == plan_item.id
 
     temporal = _FakeTemporalClient()
     result = await review_generation_job(
@@ -209,3 +209,131 @@ async def test_reject_repoints_linked_plan_item_to_new_job(db_session: AsyncSess
     refreshed = await marketing_repo.get_plan_item_by_id(plan_item.id)
     assert str(refreshed.generation_job_id) == result["new_job_id"]
     assert refreshed.content_item_id == seeded["item"].id
+
+
+async def test_regenerate_replaces_prompt_without_recording_a_decision(db_session: AsyncSession) -> None:
+    """Distinct from Reject: replaces the prompt outright (no "Revision
+    requested: ..." append), doesn't touch the old job's status, and
+    doesn't signal its workflow — it's not a verdict, just superseded."""
+    ctx = await _seed_workspace(db_session)
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user"].id,
+        goal_slug=ctx["goal_slug"], what_to_promote="our summer sale", mode="guided", target_platforms=["facebook"],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user"].id, campaign_name="Summer Sale"
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    plan_item = (await marketing_repo.list_plan_items_for_campaign(campaign.id))[0]
+
+    seeded = await _seed_awaiting_review_job(db_session, ctx)
+    await marketing_repo.link_plan_item_generation(
+        plan_item, content_item_id=seeded["item"].id, generation_job_id=seeded["job"].id
+    )
+    await db_session.commit()
+
+    temporal = _FakeTemporalClient()
+    new_prompt = "A completely different scene: a rustic wooden table by a window, morning light."
+    result = await regenerate_generation_job(
+        job_id=seeded["job"].id,
+        body=RegenerateJobRequest(brief_text=new_prompt),
+        current_user=ctx["user"],
+        context=_context(ctx),
+        session=db_session,
+        temporal=temporal,
+    )
+
+    assert len(temporal.signals) == 0  # not a reject — the old workflow is never signaled
+    assert len(temporal.started) == 1  # only the new generation workflow starts
+
+    creation_repo = CreationRepository(db_session)
+    old_job = await creation_repo.get_generation_job_by_id(seeded["job"].id)
+    assert old_job.status == "awaiting_review"  # untouched — no verdict recorded on it
+
+    new_job = await creation_repo.get_generation_job_by_id(result.new_job_id)
+    assert new_job.brief_text == new_prompt  # replaced outright, not appended
+    assert new_job.content_item_id == seeded["item"].id
+
+    refreshed = await marketing_repo.get_plan_item_by_id(plan_item.id)
+    assert refreshed.generation_job_id == result.new_job_id
+    assert refreshed.brief_text == new_prompt
+
+
+async def test_regenerate_cascades_to_every_plan_item_sharing_the_job(db_session: AsyncSession) -> None:
+    """A shared image (see build_bulk_plan_items' one-pair-per-platform
+    design) referenced by two plan items must have both re-pointed to the
+    freshly regenerated job, not just whichever one triggered the call."""
+    ctx = await _seed_workspace(db_session)
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user"].id,
+        goal_slug=ctx["goal_slug"], what_to_promote="our summer sale", mode="guided", target_platforms=["facebook"],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user"].id, campaign_name="Summer Sale"
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    text_item = (await marketing_repo.list_plan_items_for_campaign(campaign.id))[0]
+    image_item_a = await marketing_repo.create_plan_item(
+        campaign_id=campaign.id, sequence_number=90, title="Product (facebook image)", brief_text="n/a",
+        target_platform="facebook", content_type="image",
+    )
+    image_item_b = await marketing_repo.create_plan_item(
+        campaign_id=campaign.id, sequence_number=91, title="Product (instagram image)", brief_text="n/a",
+        target_platform="instagram", content_type="image",
+    )
+
+    seeded = await _seed_awaiting_review_job(db_session, ctx)
+    await marketing_repo.link_plan_item_generation(
+        image_item_a, content_item_id=seeded["item"].id, generation_job_id=seeded["job"].id
+    )
+    await marketing_repo.link_plan_item_generation(
+        image_item_b, content_item_id=seeded["item"].id, generation_job_id=seeded["job"].id
+    )
+    await db_session.commit()
+
+    result = await regenerate_generation_job(
+        job_id=seeded["job"].id,
+        body=RegenerateJobRequest(brief_text="A different background scene entirely."),
+        current_user=ctx["user"],
+        context=_context(ctx),
+        session=db_session,
+        temporal=_FakeTemporalClient(),
+    )
+
+    refreshed_a = await marketing_repo.get_plan_item_by_id(image_item_a.id)
+    refreshed_b = await marketing_repo.get_plan_item_by_id(image_item_b.id)
+    assert refreshed_a.generation_job_id == result.new_job_id
+    assert refreshed_b.generation_job_id == result.new_job_id
+    assert refreshed_a.brief_text == "A different background scene entirely."
+    assert refreshed_b.brief_text == "A different background scene entirely."
+
+    # The unrelated text item, never linked to the shared job, is untouched.
+    unrelated = await marketing_repo.get_plan_item_by_id(text_item.id)
+    assert unrelated.generation_job_id is None
+
+
+async def test_regenerate_requires_job_awaiting_review(db_session: AsyncSession) -> None:
+    from fastapi import HTTPException
+
+    ctx = await _seed_workspace(db_session)
+    seeded = await _seed_awaiting_review_job(db_session, ctx)
+    creation_repo = CreationRepository(db_session)
+    await creation_repo.update_job_status(seeded["job"], "approved")
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await regenerate_generation_job(
+            job_id=seeded["job"].id,
+            body=RegenerateJobRequest(brief_text="try again"),
+            current_user=ctx["user"],
+            context=_context(ctx),
+            session=db_session,
+            temporal=_FakeTemporalClient(),
+        )
+    assert exc_info.value.status_code == 409

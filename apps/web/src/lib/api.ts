@@ -466,6 +466,7 @@ export interface BrandProfileOut {
   name: string;
   tone_description: string | null;
   product_line_description: string | null;
+  brand_pillars_description: string | null;
   vocabulary: string[];
   colors: string[];
   target_audiences: string[];
@@ -544,6 +545,9 @@ export const api = {
       `/content/revisions/${revisionId}/edit`,
       { text_body: textBody },
     ),
+
+  regenerateGenerationJob: (jobId: string, briefText: string) =>
+    apiClient.post<{ new_job_id: string }>(`/content/jobs/${jobId}/regenerate`, { brief_text: briefText }),
 
   listGenerationJobs: () => apiClient.get<GenerationJobOut[]>("/content/jobs"),
 
@@ -772,6 +776,7 @@ export const api = {
     name: string;
     tone_description?: string | null;
     product_line_description?: string | null;
+    brand_pillars_description?: string | null;
     vocabulary: string[];
     colors: string[];
     target_audiences: string[];
@@ -784,6 +789,7 @@ export const api = {
       name: string;
       tone_description?: string | null;
       product_line_description?: string | null;
+      brand_pillars_description?: string | null;
       vocabulary: string[];
       colors: string[];
       target_audiences: string[];

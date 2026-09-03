@@ -97,3 +97,11 @@ class EditRevisionTextRequest(BaseModel):
 class EditRevisionTextResponse(BaseModel):
     revision: ContentRevisionOut
     applied_to_siblings: int
+
+
+class RegenerateJobRequest(BaseModel):
+    brief_text: str = Field(min_length=1, max_length=4000)
+
+
+class RegenerateJobResponse(BaseModel):
+    new_job_id: uuid.UUID

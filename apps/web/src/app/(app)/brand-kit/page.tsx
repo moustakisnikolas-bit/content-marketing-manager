@@ -22,6 +22,7 @@ function CreateProfileCard() {
   const [name, setName] = useState("");
   const [tone, setTone] = useState("");
   const [productLine, setProductLine] = useState("");
+  const [pillars, setPillars] = useState("");
   const [vocabulary, setVocabulary] = useState("");
   const [colors, setColors] = useState("");
   const [audiences, setAudiences] = useState("");
@@ -37,6 +38,7 @@ function CreateProfileCard() {
         name: name.trim(),
         tone_description: tone.trim() || null,
         product_line_description: productLine.trim() || null,
+        brand_pillars_description: pillars.trim() || null,
         vocabulary: splitList(vocabulary),
         colors: splitList(colors),
         target_audiences: splitList(audiences),
@@ -46,6 +48,7 @@ function CreateProfileCard() {
       setName("");
       setTone("");
       setProductLine("");
+      setPillars("");
       setVocabulary("");
       setColors("");
       setAudiences("");
@@ -97,6 +100,17 @@ function CreateProfileCard() {
               value={productLine}
               onChange={(e) => setProductLine(e.target.value)}
               placeholder="Soy scented candles, room diffusers, car diffusers, plant-based wax melts"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="pillars">How do you sell it? (value-selling framework)</Label>
+            <textarea
+              id="pillars"
+              rows={4}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+              value={pillars}
+              onChange={(e) => setPillars(e.target.value)}
+              placeholder="e.g. sell the experience/feeling, not the product; connect it to a real problem and its solution; emphasize convenience"
             />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">

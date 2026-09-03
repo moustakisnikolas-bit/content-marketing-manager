@@ -32,11 +32,12 @@ class BrandKitService:
         colors: list[str],
         target_audiences: list[str],
         default_ctas: list[str],
+        brand_pillars_description: str | None = None,
     ) -> BrandProfile:
         profile = await self._repo.create_brand_profile(
             workspace_id=workspace_id, name=name, tone_description=tone_description,
-            product_line_description=product_line_description, vocabulary=vocabulary,
-            colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
+            product_line_description=product_line_description, brand_pillars_description=brand_pillars_description,
+            vocabulary=vocabulary, colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
         )
         await self._audit.record(
             event_type="identity.brand_profile_created",
@@ -62,10 +63,12 @@ class BrandKitService:
         target_audiences: list[str],
         default_ctas: list[str],
         is_active: bool,
+        brand_pillars_description: str | None = None,
     ) -> BrandProfile:
         profile = await self._get_workspace_profile(profile_id, workspace_id)
         await self._repo.update_brand_profile(
             profile, name=name, tone_description=tone_description, product_line_description=product_line_description,
+            brand_pillars_description=brand_pillars_description,
             vocabulary=vocabulary, colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
             is_active=is_active,
         )

@@ -95,6 +95,9 @@ function PlanItemReviewPanel({
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [instructions, setInstructions] = useState("");
+  const [promptDraft, setPromptDraft] = useState(item.brief_text);
+  const [regenerating, setRegenerating] = useState(false);
+  const isImageLike = item.content_type === "image" || item.content_type === "story";
 
   const { data: detail } = useQuery({
     queryKey: ["content", "items", item.content_item_id],
@@ -121,6 +124,21 @@ function PlanItemReviewPanel({
       toast.error("Couldn't submit review.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (!item.generation_job_id || !promptDraft.trim()) return;
+    setRegenerating(true);
+    try {
+      await api.regenerateGenerationJob(item.generation_job_id, promptDraft.trim());
+      toast.success("Recreating the image with the updated prompt — check back shortly.");
+      await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
+      onDecided();
+    } catch {
+      toast.error("Couldn't recreate the image.");
+    } finally {
+      setRegenerating(false);
     }
   };
 
@@ -153,6 +171,32 @@ function PlanItemReviewPanel({
           <p className="text-sm text-muted-foreground">Loading preview...</p>
         )}
 
+        {isImageLike && (
+          <div className="space-y-1 rounded-md border border-border p-3">
+            <Label htmlFor={`prompt-${item.id}`}>Image prompt</Label>
+            <textarea
+              id={`prompt-${item.id}`}
+              rows={3}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
+              value={promptDraft}
+              onChange={(e) => setPromptDraft(e.target.value)}
+            />
+            <div className="flex items-center justify-between pt-1">
+              <p className="text-xs text-muted-foreground">
+                Edit the prompt and recreate the image — doesn&apos;t count as a reject.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={regenerating || busy || !promptDraft.trim()}
+                onClick={handleRegenerate}
+              >
+                {regenerating ? "Recreating..." : "Recreate image"}
+              </Button>
+            </div>
+          </div>
+        )}
+
         <div className="space-y-1">
           <Label htmlFor={`instructions-${item.id}`}>What should change? (optional, used if you reject)</Label>
           <textarea
@@ -175,13 +219,13 @@ function PlanItemReviewPanel({
             </Button>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" disabled={busy || !latestRevision} onClick={() => handleReview("approved")}>
+            <Button size="sm" disabled={busy || regenerating || !latestRevision} onClick={() => handleReview("approved")}>
               Approve
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || !latestRevision}
+              disabled={busy || regenerating || !latestRevision}
               onClick={() => handleReview("rejected")}
             >
               Reject

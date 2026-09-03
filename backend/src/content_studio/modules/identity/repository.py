@@ -249,11 +249,12 @@ class IdentityRepository:
         colors: list[str],
         target_audiences: list[str],
         default_ctas: list[str],
+        brand_pillars_description: str | None = None,
     ) -> BrandProfile:
         profile = BrandProfile(
             workspace_id=workspace_id, name=name, tone_description=tone_description,
-            product_line_description=product_line_description, vocabulary=vocabulary,
-            colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
+            product_line_description=product_line_description, brand_pillars_description=brand_pillars_description,
+            vocabulary=vocabulary, colors=colors, target_audiences=target_audiences, default_ctas=default_ctas,
         )
         self._session.add(profile)
         await self._session.flush()
@@ -280,10 +281,12 @@ class IdentityRepository:
         target_audiences: list[str],
         default_ctas: list[str],
         is_active: bool,
+        brand_pillars_description: str | None = None,
     ) -> None:
         profile.name = name
         profile.tone_description = tone_description
         profile.product_line_description = product_line_description
+        profile.brand_pillars_description = brand_pillars_description
         profile.vocabulary = vocabulary
         profile.colors = colors
         profile.target_audiences = target_audiences

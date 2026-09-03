@@ -25,6 +25,8 @@ from content_studio.modules.creation.schemas import (
     EditRevisionTextRequest,
     EditRevisionTextResponse,
     GenerationJobOut,
+    RegenerateJobRequest,
+    RegenerateJobResponse,
     ReviewRequest,
 )
 from content_studio.modules.creation.text_diff import extract_meaningful_deletions
@@ -102,8 +104,14 @@ async def _maybe_dispatch_paired_image(
     left "pending" for a manual retry."""
     try:
         marketing_repo = MarketingRepository(session)
-        text_plan_item = await marketing_repo.get_plan_item_by_generation_job_id(job.id)
-        if text_plan_item is None or text_plan_item.content_type != "text" or text_plan_item.product_id is None:
+        # A plain job_id lookup can now match more than one plan item (a
+        # shared image job referenced by two platforms) — filter to the
+        # "text" one specifically; a job that's actually a shared image
+        # job will have none, which correctly no-ops this function via the
+        # check below rather than crashing on an assumed single match.
+        candidates = await marketing_repo.list_plan_items_by_generation_job_id(job.id)
+        text_plan_item = next((i for i in candidates if i.content_type == "text"), None)
+        if text_plan_item is None or text_plan_item.product_id is None:
             return
         siblings = await marketing_repo.list_plan_items_for_campaign(text_plan_item.campaign_id)
         image_item = next(
@@ -196,8 +204,11 @@ async def _maybe_publish_approved_story(
     itself."""
     try:
         marketing_repo = MarketingRepository(session)
-        story_item = await marketing_repo.get_plan_item_by_generation_job_id(job.id)
-        if story_item is None or story_item.content_type != "story" or story_item.publication_plan_id is not None:
+        # See the matching comment in _maybe_dispatch_paired_image() above —
+        # a shared image job can match more than one plan item now.
+        candidates = await marketing_repo.list_plan_items_by_generation_job_id(job.id)
+        story_item = next((i for i in candidates if i.content_type == "story"), None)
+        if story_item is None or story_item.publication_plan_id is not None:
             return
 
         publishing_repo = PublishingRepository(session)
@@ -452,11 +463,74 @@ async def review_generation_job(
     )
 
     marketing_repo = MarketingRepository(session)
-    plan_item = await marketing_repo.get_plan_item_by_generation_job_id(job_id)
-    if plan_item is not None:
+    # Every plan item that referenced the rejected job — not just one.
+    # An image shared across platforms (see list_plan_items_by_generation_job_id's
+    # docstring) means rejecting it on one platform must re-point every
+    # platform sharing it to the same regenerated job, so e.g. rejecting
+    # Facebook's image also recreates Instagram's instead of leaving it
+    # stuck referencing the rejected version.
+    plan_items = await marketing_repo.list_plan_items_by_generation_job_id(job_id)
+    for plan_item in plan_items:
         await marketing_repo.link_plan_item_generation(
             plan_item, content_item_id=job.content_item_id, generation_job_id=new_job.id
         )
+    if plan_items:
         await session.commit()
 
     return {"status": "signal_sent", "new_job_id": str(new_job.id)}
+
+
+@router.post("/jobs/{job_id}/regenerate", response_model=RegenerateJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def regenerate_generation_job(
+    job_id: uuid.UUID,
+    body: RegenerateJobRequest,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+    temporal: Client = Depends(get_temporal_client_dep),
+) -> RegenerateJobResponse:
+    """Dispatches a fresh generation from a freely-edited prompt — for
+    iterating on an image's prompt (most useful there, since there's no
+    way to hand-edit pixels the way edit_revision_text() lets you hand-edit
+    text) before deciding whether to Approve or Reject the result.
+    Deliberately NOT the same as rejecting: Reject records a final negative
+    verdict and always appends "Revision requested: ..." onto the existing
+    prompt rather than replacing it, which compounds into prompt bloat
+    over repeated iterations; this replaces the prompt outright and
+    doesn't touch the job's review status or signal its workflow — that
+    workflow is simply left durably idle (harmless) once the plan item(s)
+    move on to the new job, same as any superseded generation."""
+    repo = CreationRepository(session)
+    job = await repo.get_generation_job_by_id(job_id)
+    if job is None or job.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Generation job not found")
+    if job.status != "awaiting_review":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Job is not awaiting review (status={job.status})")
+
+    new_job = await _dispatch_generation_job(
+        repo=repo,
+        session=session,
+        temporal=temporal,
+        organization_id=job.organization_id,
+        workspace_id=job.workspace_id,
+        content_item_id=job.content_item_id,
+        recipe_id=job.recipe_id,
+        requested_by_user_id=current_user.id,
+        subscription_id=job.subscription_id,
+        brief_text=body.brief_text,
+        reference_image_url=job.reference_image_url,
+    )
+
+    marketing_repo = MarketingRepository(session)
+    # Same cascade as the reject branch above — a shared image's plan
+    # items (one per platform) must all move to the new job together.
+    plan_items = await marketing_repo.list_plan_items_by_generation_job_id(job_id)
+    for plan_item in plan_items:
+        await marketing_repo.link_plan_item_generation(
+            plan_item, content_item_id=job.content_item_id, generation_job_id=new_job.id
+        )
+        await marketing_repo.update_plan_item_brief_text(plan_item, body.brief_text)
+    if plan_items:
+        await session.commit()
+
+    return RegenerateJobResponse(new_job_id=new_job.id)
