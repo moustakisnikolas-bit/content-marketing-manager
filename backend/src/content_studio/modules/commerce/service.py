@@ -224,6 +224,15 @@ class CommerceService:
         await self._session.commit()
 
     async def sync_products(self, connection_id: uuid.UUID) -> SyncResult:
+        """Drains the store's *entire* product catalog in one call, not just
+        one page — a single "Sync" click (or the automatic post-webhook
+        catch-up) always ends with every product the store has, instead of
+        silently stopping after one page and leaving the rest for a future
+        click that may never come (confirmed live: ceri.gr's sync cursor
+        sat on page 3 for days with more products never pulled in). Picks
+        up from wherever the stored cursor left off — e.g. mid-drain from a
+        previous call that failed partway — rather than always restarting
+        at page 1."""
         connection = await self._repo.get_connection_by_id(connection_id)
         if connection is None:
             raise StoreNotFound(str(connection_id))
@@ -231,51 +240,60 @@ class CommerceService:
         access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
 
         cursor_row = await self._repo.get_sync_cursor(connection_id, "products")
-        page = await adapter.list_products(access_token=access_token, cursor=cursor_row.cursor if cursor_row else None)
+        cursor = cursor_row.cursor if cursor_row else None
+        total_synced = 0
 
-        for product_data in page.products:
-            price = _to_decimal(product_data.price)
-            product = await self._repo.upsert_product(
-                organization_id=connection.organization_id,
-                workspace_id=connection.workspace_id,
-                store_connection_id=connection.id,
-                external_product_id=product_data.external_product_id,
-                title=product_data.title,
-                description=product_data.description,
-                price=price,
-                currency=product_data.currency,
-                status=product_data.status,
-                raw_payload=product_data.raw_payload,
-                categories=product_data.categories,
-            )
-            for variant in product_data.variants:
-                await self._repo.upsert_variant(
-                    product_id=product.id,
-                    external_variant_id=variant.external_variant_id,
-                    title=variant.title,
-                    sku=variant.sku,
-                    price=_to_decimal(variant.price),
-                    raw_payload=variant.raw_payload,
-                )
-            for position, url in enumerate(product_data.image_urls):
-                await self._repo.upsert_asset(
-                    product_id=product.id,
-                    external_asset_id=f"{product_data.external_product_id}-image-{position}",
-                    url=url,
-                    position=position,
-                )
+        while True:
+            page = await adapter.list_products(access_token=access_token, cursor=cursor)
 
-        await self._repo.set_sync_cursor(connection_id, "products", page.next_cursor)
+            for product_data in page.products:
+                price = _to_decimal(product_data.price)
+                product = await self._repo.upsert_product(
+                    organization_id=connection.organization_id,
+                    workspace_id=connection.workspace_id,
+                    store_connection_id=connection.id,
+                    external_product_id=product_data.external_product_id,
+                    title=product_data.title,
+                    description=product_data.description,
+                    price=price,
+                    currency=product_data.currency,
+                    status=product_data.status,
+                    raw_payload=product_data.raw_payload,
+                    categories=product_data.categories,
+                )
+                for variant in product_data.variants:
+                    await self._repo.upsert_variant(
+                        product_id=product.id,
+                        external_variant_id=variant.external_variant_id,
+                        title=variant.title,
+                        sku=variant.sku,
+                        price=_to_decimal(variant.price),
+                        raw_payload=variant.raw_payload,
+                    )
+                for position, url in enumerate(product_data.image_urls):
+                    await self._repo.upsert_asset(
+                        product_id=product.id,
+                        external_asset_id=f"{product_data.external_product_id}-image-{position}",
+                        url=url,
+                        position=position,
+                    )
+
+            total_synced += len(page.products)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        await self._repo.set_sync_cursor(connection_id, "products", None)
         await self._repo.set_last_synced(connection)
         await self._audit.record(
             event_type="commerce.products_synced",
             actor_type="service",
             organization_id=connection.organization_id,
-            summary=f"Synced {len(page.products)} product(s) from {connection.platform}",
-            payload={"connection_id": str(connection_id), "products_synced": len(page.products)},
+            summary=f"Synced {total_synced} product(s) from {connection.platform}",
+            payload={"connection_id": str(connection_id), "products_synced": total_synced},
         )
         await self._session.commit()
-        return SyncResult(products_synced=len(page.products), next_cursor=page.next_cursor)
+        return SyncResult(products_synced=total_synced, next_cursor=None)
 
     async def receive_webhook(
         self,

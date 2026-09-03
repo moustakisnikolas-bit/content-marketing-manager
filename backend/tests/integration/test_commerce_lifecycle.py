@@ -274,14 +274,58 @@ async def test_sync_products_drains_paginated_catalog_without_duplicates(db_sess
         platform="woocommerce", code="fake-code",
     )
 
-    result1 = await service.sync_products(connection.id)
-    assert result1.next_cursor == "1"
-    result2 = await service.sync_products(connection.id)
-    assert result2.next_cursor is None
+    result = await service.sync_products(connection.id)
+    assert result.products_synced == 2  # both pages drained in this one call
+    assert result.next_cursor is None
 
     repo = CommerceRepository(db_session)
     products = await repo.list_products_for_connection(connection.id)
     assert {p.external_product_id for p in products} == {"p1", "p2"}
+
+
+async def test_sync_products_resumes_a_stale_mid_drain_cursor_and_finishes_it(db_session: AsyncSession) -> None:
+    """Regression test for a real production bug (ceri.gr): a connection
+    whose cursor was left mid-pagination under the old one-page-per-call
+    behavior must have the rest of its catalog pulled in by a single fresh
+    sync_products() call, not require the caller to know how many more
+    times to click "Sync"."""
+    from content_studio.ports.store_connector import ProductData, ProductPage
+
+    ctx = await _seed_workspace(db_session)
+    secrets = FakeSecrets()
+    pages = [
+        ProductPage(products=[ProductData(
+            external_product_id="p1", title="Product 1", description="d1", price="10.00", currency="USD",
+            status="active", raw_payload={},
+        )], next_cursor="1"),
+        ProductPage(products=[ProductData(
+            external_product_id="p2", title="Product 2", description="d2", price="20.00", currency="USD",
+            status="active", raw_payload={},
+        )], next_cursor="2"),
+        ProductPage(products=[ProductData(
+            external_product_id="p3", title="Product 3", description="d3", price="30.00", currency="USD",
+            status="active", raw_payload={},
+        )], next_cursor=None),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="woocommerce", code="fake-code",
+    )
+
+    repo = CommerceRepository(db_session)
+    # Simulates a connection stuck mid-drain from before this fix — page 0
+    # was already synced, the stored cursor points at page 1.
+    await repo.set_sync_cursor(connection.id, "products", "1")
+    await db_session.commit()
+
+    result = await service.sync_products(connection.id)
+    assert result.products_synced == 2  # picks up from page 1, finishes at page 2
+    assert result.next_cursor is None
+
+    products = await repo.list_products_for_connection(connection.id)
+    assert {p.external_product_id for p in products} == {"p2", "p3"}
 
 
 async def test_webhook_with_valid_signature_is_accepted(db_session: AsyncSession) -> None:
