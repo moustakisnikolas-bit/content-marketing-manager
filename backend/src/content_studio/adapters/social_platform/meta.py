@@ -31,13 +31,17 @@ _REQUESTED_SCOPES = (
     "instagram_basic",
     "instagram_content_publish",
     "instagram_manage_insights",
-    # Confirmed live: deleting Instagram media (delete_post()) 400s with
-    # "does not support this operation" without this scope — Meta's own
-    # docs list it as the specific requirement for IG media DELETE,
-    # separate from instagram_content_publish (which only covers
-    # creating). Existing connections made before this was added won't
-    # have it — reconnecting is required for delete to actually work.
-    "instagram_manage_contents",
+    # NOTE: "instagram_manage_contents" was added here as the presumed fix
+    # for delete_post() 400ing, but Meta's OAuth dialog rejected it live
+    # with "Invalid Scopes" — confirmed this app's product config (Facebook
+    # Login for Business -> connected Page -> IG Business Account) doesn't
+    # recognize that permission, whether because it belongs to the newer,
+    # separate "Instagram API with Instagram Login" product this app
+    # doesn't use, or because it needs to be added as a Product in the
+    # Meta App Dashboard first. Reverted rather than leave a scope that
+    # breaks reconnecting entirely — see PlatformDeleteRejected's call site
+    # for the still-open question of what (if anything) actually unlocks
+    # IG delete for this app's integration shape.
 )
 _TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
 _POLL_INTERVAL_SECONDS = 2
