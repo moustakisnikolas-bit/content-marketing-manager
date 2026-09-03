@@ -198,17 +198,22 @@ function ScheduledPosts() {
     refetchInterval: 4000,
   });
 
+  // Already-published plans belong to campaign history, not this
+  // upcoming-schedule view — keeping them here just piles up over time
+  // with nothing actionable to do about any of them.
+  const upcoming = plans?.filter((p) => p.status !== "published") ?? [];
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Scheduled &amp; published</CardTitle>
+        <CardTitle className="text-base">Scheduled</CardTitle>
       </CardHeader>
       <CardContent>
-        {!plans || plans.length === 0 ? (
+        {upcoming.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nothing scheduled yet.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {plans.map((plan) => (
+            {upcoming.map((plan) => (
               <li key={plan.id} className="flex items-center justify-between py-3 text-sm">
                 <span>{STATUS_LABELS[plan.status] ?? plan.status}</span>
                 <span className="text-xs text-muted-foreground">
