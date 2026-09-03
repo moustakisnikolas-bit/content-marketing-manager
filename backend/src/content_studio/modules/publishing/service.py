@@ -17,6 +17,11 @@ from content_studio.ports.social_platform import ConnectableAccount, OAuthToken,
 # content_type -> the capability name required to publish it directly.
 _REQUIRED_CAPABILITY = {"text": "direct_publish_text", "image": "direct_publish_image"}
 
+# Platforms delete_publication_plan() never attempts a real platform-side
+# delete for — see that method's docstring. Instagram's Graph API needs a
+# permission this app's OAuth product config can't currently grant.
+_NO_PLATFORM_DELETE_SUPPORT = {"instagram"}
+
 
 @dataclass(frozen=True)
 class StepResult:
@@ -317,12 +322,21 @@ class PublishingService:
 
     async def delete_publication_plan(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> None:
         """Removes this app's own record of the plan — and, if it already
-        published for real, deletes the live post from the platform first.
-        A plan that never successfully dispatched (no succeeded attempt)
-        is just a local record with nothing to undo on the platform's
-        side. The platform call happens (and must succeed, or raise)
-        before the local record is deleted — never leave the app's
-        tracking gone while the real post is still live."""
+        published for real *and* the platform actually supports it, deletes
+        the live post first. A plan that never successfully dispatched (no
+        succeeded attempt) is just a local record with nothing to undo on
+        the platform's side. The platform call (when attempted) must
+        succeed, or raise, before the local record is deleted — never leave
+        the app's tracking gone while a real post is still live.
+
+        Instagram is deliberately excluded from the platform call: its
+        Graph API requires a permission (confirmed live) this app's OAuth
+        product config doesn't grant — requesting it 400s the login dialog
+        itself with "Invalid Scopes" rather than just failing the delete,
+        so there's no scope to add without a Meta App Dashboard change this
+        code can't make. Instagram deletes are app-record-only until that's
+        sorted out; Facebook is unaffected (different, already-granted
+        permission)."""
         plan = await self._repo.get_publication_plan_by_id(plan_id)
         assert plan is not None
 
@@ -330,31 +344,37 @@ class PublishingService:
         succeeded = [a for a in attempts if a.status == "succeeded" and a.external_post_id is not None]
         external_post_id = succeeded[-1].external_post_id if succeeded else None
 
+        connection = None
+        removed_live_post = False
         if external_post_id is not None:
             connection = await self._repo.get_connection_by_id(plan.platform_connection_id)
             assert connection is not None
-            access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
-            try:
-                await self._platform_adapter.delete_post(
-                    access_token=access_token, external_post_id=external_post_id
-                )
-            except httpx.HTTPStatusError as exc:
-                # Confirmed live: this is commonly a missing permission
-                # scope (Instagram delete needs instagram_manage_contents
-                # specifically, separate from instagram_content_publish),
-                # not a transient failure — surface it as its own kind so
-                # the API layer can point the user at reconnecting rather
-                # than a generic retry.
-                raise PlatformDeleteRejected(connection.platform, exc.response.text[:300]) from exc
+            if connection.platform not in _NO_PLATFORM_DELETE_SUPPORT:
+                access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
+                try:
+                    await self._platform_adapter.delete_post(
+                        access_token=access_token, external_post_id=external_post_id
+                    )
+                except httpx.HTTPStatusError as exc:
+                    raise PlatformDeleteRejected(connection.platform, exc.response.text[:300]) from exc
+                removed_live_post = True
+
+        if removed_live_post:
+            summary_suffix = f" (also removed live post {external_post_id})"
+        elif external_post_id is not None:
+            summary_suffix = f" (app record only — live post {external_post_id} left on {connection.platform})"
+        else:
+            summary_suffix = ""
 
         await self._audit.record(
             event_type="publishing.deleted",
             actor_type="user",
             actor_id=str(user_id),
             organization_id=plan.organization_id,
-            summary="Publication plan deleted"
-            + (f" (also removed live post {external_post_id})" if external_post_id else ""),
-            payload={"plan_id": str(plan_id), "external_post_id": external_post_id},
+            summary=f"Publication plan deleted{summary_suffix}",
+            payload={
+                "plan_id": str(plan_id), "external_post_id": external_post_id, "removed_live_post": removed_live_post,
+            },
         )
         await self._repo.delete_plan(plan)
         await self._session.commit()

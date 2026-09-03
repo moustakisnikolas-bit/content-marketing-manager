@@ -200,14 +200,23 @@ function ScheduledPosts() {
     queryFn: api.listPublicationPlans,
     refetchInterval: 4000,
   });
+  const { data: connections } = useQuery({ queryKey: ["publishing", "connections"], queryFn: api.listConnections });
+  const platformFor = (plan: PublicationPlanOut) =>
+    connections?.find((c) => c.connection.id === plan.platform_connection_id)?.connection.platform ?? null;
 
   const handleDelete = async (plan: PublicationPlanOut) => {
     const isPublished = plan.status === "published";
+    // Instagram's Graph API needs a permission this app's connected account
+    // doesn't have (confirmed live) — its delete is app-record-only, the
+    // real post stays up. Facebook deletion does remove the live post.
+    const removesLivePost = isPublished && platformFor(plan) !== "instagram";
     if (
       !window.confirm(
-        isPublished
-          ? "Delete this permanently? This also removes the real post from Facebook/Instagram — that can't be undone."
-          : "Remove this from your schedule? This can't be undone.",
+        removesLivePost
+          ? "Delete this permanently? This also removes the real post from Facebook — that can't be undone."
+          : isPublished
+            ? "Remove this from the app? The real post stays live on Instagram — this only clears the app's own tracking."
+            : "Remove this from your schedule? This can't be undone.",
       )
     ) {
       return;
@@ -215,7 +224,7 @@ function ScheduledPosts() {
     setDeletingId(plan.id);
     try {
       await api.deletePublicationPlan(plan.id);
-      toast.success(isPublished ? "Deleted — also removed from the live platform" : "Removed");
+      toast.success(removesLivePost ? "Deleted — also removed from the live platform" : "Removed");
       await queryClient.invalidateQueries({ queryKey: ["publishing", "plans"] });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Couldn't delete this.";
