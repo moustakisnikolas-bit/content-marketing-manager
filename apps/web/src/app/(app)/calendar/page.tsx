@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { api, type Platform } from "@/lib/api";
+import { api, type Platform, type PublicationPlanOut } from "@/lib/api";
 import { ApiError } from "@/lib/api-client";
 
 const PLATFORMS: Platform[] = ["facebook", "instagram", "tiktok", "youtube"];
@@ -192,33 +192,65 @@ function SchedulePost() {
 }
 
 function ScheduledPosts() {
+  const queryClient = useQueryClient();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const { data: plans } = useQuery({
     queryKey: ["publishing", "plans"],
     queryFn: api.listPublicationPlans,
     refetchInterval: 4000,
   });
 
-  // Already-published plans belong to campaign history, not this
-  // upcoming-schedule view — keeping them here just piles up over time
-  // with nothing actionable to do about any of them.
-  const upcoming = plans?.filter((p) => p.status !== "published") ?? [];
+  const handleDelete = async (plan: PublicationPlanOut) => {
+    const isPublished = plan.status === "published";
+    if (
+      !window.confirm(
+        isPublished
+          ? "Delete this permanently? This also removes the real post from Facebook/Instagram — that can't be undone."
+          : "Remove this from your schedule? This can't be undone.",
+      )
+    ) {
+      return;
+    }
+    setDeletingId(plan.id);
+    try {
+      await api.deletePublicationPlan(plan.id);
+      toast.success(isPublished ? "Deleted — also removed from the live platform" : "Removed");
+      await queryClient.invalidateQueries({ queryKey: ["publishing", "plans"] });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Couldn't delete this.";
+      toast.error(message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Scheduled</CardTitle>
+        <CardTitle className="text-base">Scheduled &amp; published</CardTitle>
       </CardHeader>
       <CardContent>
-        {upcoming.length === 0 ? (
+        {!plans || plans.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nothing scheduled yet.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {upcoming.map((plan) => (
+            {plans.map((plan) => (
               <li key={plan.id} className="flex items-center justify-between py-3 text-sm">
-                <span>{STATUS_LABELS[plan.status] ?? plan.status}</span>
-                <span className="text-xs text-muted-foreground">
-                  {plan.scheduled_for ? new Date(plan.scheduled_for).toLocaleString() : "as soon as approved"}
-                </span>
+                <div>
+                  <span>{STATUS_LABELS[plan.status] ?? plan.status}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {plan.scheduled_for ? new Date(plan.scheduled_for).toLocaleString() : "as soon as approved"}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={deletingId === plan.id}
+                  onClick={() => handleDelete(plan)}
+                >
+                  {deletingId === plan.id ? "Deleting..." : "Delete"}
+                </Button>
               </li>
             ))}
           </ul>

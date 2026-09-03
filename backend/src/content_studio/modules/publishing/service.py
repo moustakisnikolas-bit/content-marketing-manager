@@ -312,3 +312,36 @@ class PublishingService:
         await self._repo.approve_plan(plan, user_id)
         await self._repo.update_plan_status(plan, "approved")
         await self._session.commit()
+
+    async def delete_publication_plan(self, plan_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """Removes this app's own record of the plan — and, if it already
+        published for real, deletes the live post from the platform first.
+        A plan that never successfully dispatched (no succeeded attempt)
+        is just a local record with nothing to undo on the platform's
+        side. The platform call happens (and must succeed, or raise)
+        before the local record is deleted — never leave the app's
+        tracking gone while the real post is still live."""
+        plan = await self._repo.get_publication_plan_by_id(plan_id)
+        assert plan is not None
+
+        attempts = await self._repo.list_attempts_for_plan(plan_id)
+        succeeded = [a for a in attempts if a.status == "succeeded" and a.external_post_id is not None]
+        external_post_id = succeeded[-1].external_post_id if succeeded else None
+
+        if external_post_id is not None:
+            connection = await self._repo.get_connection_by_id(plan.platform_connection_id)
+            assert connection is not None
+            access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
+            await self._platform_adapter.delete_post(access_token=access_token, external_post_id=external_post_id)
+
+        await self._audit.record(
+            event_type="publishing.deleted",
+            actor_type="user",
+            actor_id=str(user_id),
+            organization_id=plan.organization_id,
+            summary="Publication plan deleted"
+            + (f" (also removed live post {external_post_id})" if external_post_id else ""),
+            payload={"plan_id": str(plan_id), "external_post_id": external_post_id},
+        )
+        await self._repo.delete_plan(plan)
+        await self._session.commit()

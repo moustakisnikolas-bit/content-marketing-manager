@@ -42,6 +42,8 @@ class FakeSocialPlatform:
         ]
         self.recent_posts = recent_posts or []
         self.published_calls: list[dict] = []
+        self.deleted_post_ids: list[str] = []
+        self.delete_should_fail = False
 
     def get_authorization_url(self, *, state: str) -> str:
         return f"https://fake-oauth.test/authorize?state={state}"
@@ -95,6 +97,11 @@ class FakeSocialPlatform:
 
     async def get_post_status(self, *, access_token: str, external_post_id: str) -> str:
         return self.post_status
+
+    async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
+        if self.delete_should_fail:
+            raise RuntimeError("simulated platform delete failure")
+        self.deleted_post_ids.append(external_post_id)
 
     async def get_post_metrics(self, *, access_token: str, external_post_id: str) -> dict:
         return self.post_metrics

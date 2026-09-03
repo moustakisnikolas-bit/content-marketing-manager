@@ -261,6 +261,16 @@ class MetaGraphAdapter:
             )
         return "published" if response.status_code == 200 else f"error:{response.status_code}"
 
+    async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.delete(f"{_GRAPH_API_BASE}/{external_post_id}", params={"access_token": access_token})
+        # A 404 here means the post is already gone on Meta's side (deleted
+        # manually, or Meta itself removed it) — treat that as success
+        # rather than raising, since the end state ("not on the platform
+        # anymore") is exactly what the caller wants either way.
+        if response.status_code not in (200, 404):
+            response.raise_for_status()
+
     async def get_post_metrics(self, *, access_token: str, external_post_id: str) -> dict:
         # Field names mapped onto the same shape the stub already uses
         # (impressions/likes/comments/shares/link_clicks) so

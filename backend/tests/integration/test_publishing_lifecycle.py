@@ -306,3 +306,89 @@ async def test_finalize_rejected_does_not_publish(db_session: AsyncSession) -> N
     assert updated_plan.status == "rejected"
     assert updated_plan.failure_reason == "not the right time"
     assert len(platform_adapter.published_calls) == 0
+
+
+async def test_delete_publication_plan_deletes_the_live_post_before_the_local_record(
+    db_session: AsyncSession,
+) -> None:
+    ctx = await _seed_workspace(db_session)
+    item_id = await _seed_approved_text_item(db_session, ctx)
+
+    platform_adapter = FakeSocialPlatform()
+    service = _service(db_session, platform_adapter=platform_adapter)
+    connection = await service.connect_platform(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="facebook", code="fake-code",
+    )
+    repo = PublishingRepository(db_session)
+    plan = await repo.create_publication_plan(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=item_id,
+        platform_connection_id=connection.id, created_by_user_id=ctx["user_id"], scheduled_for=None,
+    )
+    await db_session.commit()
+    await service.check_capability(plan.id)
+    await service.mark_approved(plan.id, ctx["user_id"])
+    dispatch_result = await service.dispatch_publish(plan.id)
+    assert dispatch_result.ok
+    attempts = await repo.list_attempts_for_plan(plan.id)
+    real_post_id = attempts[0].external_post_id
+
+    await service.delete_publication_plan(plan.id, ctx["user_id"])
+
+    assert platform_adapter.deleted_post_ids == [real_post_id]
+    assert await repo.get_publication_plan_by_id(plan.id) is None
+
+
+async def test_delete_publication_plan_that_never_published_skips_the_platform_call(
+    db_session: AsyncSession,
+) -> None:
+    ctx = await _seed_workspace(db_session)
+    item_id = await _seed_approved_text_item(db_session, ctx)
+
+    platform_adapter = FakeSocialPlatform()
+    service = _service(db_session, platform_adapter=platform_adapter)
+    connection = await service.connect_platform(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="facebook", code="fake-code",
+    )
+    repo = PublishingRepository(db_session)
+    plan = await repo.create_publication_plan(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=item_id,
+        platform_connection_id=connection.id, created_by_user_id=ctx["user_id"], scheduled_for=None,
+    )
+    await db_session.commit()
+
+    await service.delete_publication_plan(plan.id, ctx["user_id"])
+
+    assert platform_adapter.deleted_post_ids == []
+    assert await repo.get_publication_plan_by_id(plan.id) is None
+
+
+async def test_delete_publication_plan_keeps_the_local_record_when_the_platform_call_fails(
+    db_session: AsyncSession,
+) -> None:
+    ctx = await _seed_workspace(db_session)
+    item_id = await _seed_approved_text_item(db_session, ctx)
+
+    platform_adapter = FakeSocialPlatform()
+    service = _service(db_session, platform_adapter=platform_adapter)
+    connection = await service.connect_platform(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="facebook", code="fake-code",
+    )
+    repo = PublishingRepository(db_session)
+    plan = await repo.create_publication_plan(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], content_item_id=item_id,
+        platform_connection_id=connection.id, created_by_user_id=ctx["user_id"], scheduled_for=None,
+    )
+    await db_session.commit()
+    await service.check_capability(plan.id)
+    await service.mark_approved(plan.id, ctx["user_id"])
+    await service.dispatch_publish(plan.id)
+
+    platform_adapter.delete_should_fail = True
+    with pytest.raises(RuntimeError, match="simulated platform delete failure"):
+        await service.delete_publication_plan(plan.id, ctx["user_id"])
+
+    # Never leave the app's tracking gone while the real post is still live.
+    assert await repo.get_publication_plan_by_id(plan.id) is not None

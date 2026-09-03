@@ -109,6 +109,9 @@ class StubSocialPlatformAdapter:
     async def get_post_status(self, *, access_token: str, external_post_id: str) -> str:
         return "published"
 
+    async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
+        return None
+
     async def get_post_metrics(self, *, access_token: str, external_post_id: str) -> dict:
         # Deterministic-but-varied: seeded by the post id so repeated polls of
         # the same post return a stable-shaped but slowly "growing" payload,

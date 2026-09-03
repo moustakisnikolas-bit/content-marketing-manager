@@ -106,6 +106,13 @@ class SocialPlatformPort(Protocol):
 
     async def get_post_status(self, *, access_token: str, external_post_id: str) -> str: ...
 
+    async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
+        """Removes an already-published post/media from the platform
+        itself, not just this app's own record of it — a real, irreversible
+        action on the connected account. Implementations should raise on
+        failure (a 404 from the platform is not swallowed as success)."""
+        ...
+
     async def get_post_metrics(self, *, access_token: str, external_post_id: str) -> dict:
         """Returns the provider's raw, native metric payload for a post
         (e.g. {'impressions': 1523, 'likes': 42, ...}) — field names and

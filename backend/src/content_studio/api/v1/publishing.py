@@ -281,3 +281,29 @@ async def review_publication_plan(
         args=[body.decision, str(current_user.id), body.comment],
     )
     return {"status": "signal_sent"}
+
+
+@router.delete("/plans/{plan_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_publication_plan(
+    plan_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    context: WorkspaceContext = Depends(get_workspace_context),
+    session: AsyncSession = Depends(get_db_session),
+    secrets: SecretsPort = Depends(get_secrets),
+    object_storage: ObjectStoragePort = Depends(get_object_storage),
+) -> None:
+    """Deletes this app's record of the plan — and, if it already
+    published for real, the live post on the platform too (see
+    PublishingService.delete_publication_plan's docstring). Irreversible
+    on the platform's side once it runs."""
+    repo = PublishingRepository(session)
+    plan = await repo.get_publication_plan_by_id(plan_id)
+    if plan is None or plan.workspace_id != context.workspace_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Publication plan not found")
+    connection = await repo.get_connection_by_id(plan.platform_connection_id)
+    if connection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Platform connection not found")
+
+    adapter = get_platform_adapter(connection.platform)
+    service = PublishingService(session, platform_adapter=adapter, secrets=secrets, object_storage=object_storage)
+    await service.delete_publication_plan(plan_id, current_user.id)

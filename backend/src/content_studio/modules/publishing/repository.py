@@ -156,6 +156,14 @@ class PublishingRepository:
         plan.approved_at = datetime.now(UTC)
         await self._session.flush()
 
+    async def delete_plan(self, plan: PublicationPlan) -> None:
+        # Attempts/reconciliations cascade (ondelete="CASCADE" on both FKs,
+        # see models.py) — this is purely the app's own record, never the
+        # platform-side post itself, which the caller must delete
+        # separately through the SocialPlatformPort before calling this.
+        await self._session.delete(plan)
+        await self._session.flush()
+
     # -- Publication attempts --------------------------------------------
 
     async def create_attempt(self, *, publication_plan_id: uuid.UUID, attempt_number: int) -> PublicationAttempt:

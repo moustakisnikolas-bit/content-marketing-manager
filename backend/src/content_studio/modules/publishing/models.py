@@ -140,7 +140,13 @@ class PublicationPlan(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Ba
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    attempts: Mapped[list["PublicationAttempt"]] = relationship(back_populates="plan")
+    # passive_deletes=True: without it, SQLAlchemy's ORM tries to manage
+    # this relationship itself on delete by UPDATE-ing each attempt's FK to
+    # NULL first, which fails against publication_plan_id's NOT NULL
+    # constraint — confirmed live via delete_publication_plan()'s own test
+    # (same gotcha as commerce/models.py's StoreConnection.capabilities).
+    # Defers entirely to the DB's own ondelete="CASCADE" on that FK instead.
+    attempts: Mapped[list["PublicationAttempt"]] = relationship(back_populates="plan", passive_deletes=True)
 
 
 class PublicationAttempt(UUIDPrimaryKeyMixin, Base):
