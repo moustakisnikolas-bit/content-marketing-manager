@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Eye, Trash2 } from "lucide-react";
+import { Bookmark, Eye, Heart, MessageCircle, Send, Share2, ThumbsUp, Trash2 } from "lucide-react";
 import { Suspense, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -272,6 +272,162 @@ function PlanItemReviewPanel({
   );
 }
 
+// Styled to read like an actual Facebook/Instagram post, not a plain data
+// row — the whole point is letting you judge how the real thing will
+// look (image + caption together) before it goes out, not just its title.
+function SocialPostMockup({
+  platform, pageName, imageUrl, caption, scheduledFor,
+}: {
+  platform: string | null;
+  pageName: string;
+  imageUrl: string | undefined;
+  caption: string;
+  scheduledFor: string;
+}) {
+  const isInstagram = platform === "instagram";
+  const timeLabel = new Date(scheduledFor).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+
+  return (
+    <div className="w-full max-w-sm overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      <div className="flex items-center gap-2 p-3">
+        <div
+          className={cn(
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white",
+            isInstagram ? "bg-gradient-to-br from-amber-400 via-pink-500 to-purple-600" : "bg-[#1877F2]",
+          )}
+        >
+          {pageName.charAt(0).toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{pageName}</p>
+          <p className="text-xs text-muted-foreground">
+            {timeLabel} · {isInstagram ? "Instagram" : "Facebook"}
+          </p>
+        </div>
+      </div>
+
+      {/* Facebook shows the caption above the image; Instagram below. */}
+      {!isInstagram && caption && <p className="whitespace-pre-wrap px-3 pb-3 text-sm">{caption}</p>}
+
+      {imageUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element -- presigned storage URL, not a local/optimizable asset
+        <img src={imageUrl} alt="Post preview" className="aspect-square w-full object-cover" />
+      ) : (
+        <div className="flex aspect-square w-full items-center justify-center bg-muted text-xs text-muted-foreground">
+          Text-only post — no image
+        </div>
+      )}
+
+      <div className="flex items-center gap-4 px-3 py-2 text-muted-foreground">
+        {isInstagram ? (
+          <>
+            <Heart className="h-5 w-5" />
+            <MessageCircle className="h-5 w-5" />
+            <Send className="h-5 w-5" />
+            <Bookmark className="ml-auto h-5 w-5" />
+          </>
+        ) : (
+          <>
+            <ThumbsUp className="h-5 w-5" />
+            <MessageCircle className="h-5 w-5" />
+            <Share2 className="h-5 w-5" />
+          </>
+        )}
+      </div>
+
+      {isInstagram && caption && (
+        <p className="whitespace-pre-wrap px-3 pb-3 text-sm">
+          <span className="font-semibold">{pageName}</span> {caption}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SocialStoryMockup({ pageName, imageUrl }: { pageName: string; imageUrl: string | undefined }) {
+  return (
+    <div className="w-full max-w-[220px]">
+      <p className="mb-1 text-center text-xs font-medium text-muted-foreground">
+        Story preview — regenerated from this photo after publishing
+      </p>
+      <div className="relative aspect-[9/16] w-full overflow-hidden rounded-lg border border-border bg-black">
+        <div className="absolute inset-x-2 top-2 h-0.5 rounded-full bg-white/40" />
+        <div className="absolute left-2 right-2 top-4 z-10 flex items-center gap-1.5">
+          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 via-pink-500 to-purple-600 text-[10px] font-semibold text-white">
+            {pageName.charAt(0).toUpperCase()}
+          </div>
+          <p className="truncate text-xs font-medium text-white drop-shadow">{pageName}</p>
+        </div>
+        {imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- presigned storage URL, not a local/optimizable asset
+          <img src={imageUrl} alt="Story preview" className="h-full w-full object-cover opacity-80" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-xs text-white/60">No image yet</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One entry in the pre-publish review: fetches the actual generated image
+// + caption for this plan item (and its paired text/image sibling) so the
+// preview shows the real post, not just a title and a timestamp.
+function PublishPreviewItem({
+  pageName, planItem, textItem, scheduledFor, willCreateStory,
+}: {
+  pageName: string;
+  planItem: CampaignPlanItemOut;
+  textItem: CampaignPlanItemOut | null;
+  scheduledFor: string;
+  willCreateStory: boolean;
+}) {
+  const isImagePost = planItem.content_type === "image";
+  // A text-only product (no paired image) publishes planItem itself as the
+  // post — its own content is the caption. Otherwise the caption comes
+  // from the paired text item; planItem is the image being published.
+  const captionItem = isImagePost ? textItem : planItem;
+
+  const imageQuery = useQuery({
+    queryKey: ["content", "items", planItem.content_item_id],
+    queryFn: () => api.getContentItem(planItem.content_item_id!),
+    enabled: isImagePost && !!planItem.content_item_id,
+  });
+  const captionQuery = useQuery({
+    queryKey: ["content", "items", captionItem?.content_item_id],
+    queryFn: () => api.getContentItem(captionItem?.content_item_id ?? ""),
+    enabled: !!captionItem?.content_item_id,
+  });
+  const imageRevision = imageQuery.data?.revisions.at(-1);
+  const assetQuery = useQuery({
+    queryKey: ["assets", imageRevision?.asset_id, "download-url"],
+    queryFn: () => api.getAssetDownloadUrl(imageRevision!.asset_id!),
+    enabled: !!imageRevision?.asset_id,
+  });
+  const caption = captionQuery.data?.revisions.at(-1)?.text_body ?? planItem.title;
+
+  return (
+    <div className="rounded-md border border-border p-4">
+      <p className="mb-1 text-sm font-medium">{planItem.title}</p>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Scheduled for {new Date(scheduledFor).toLocaleString()}
+        {willCreateStory && " · a Story will also be created for review"}
+      </p>
+      <div className="flex flex-wrap items-start gap-6">
+        <SocialPostMockup
+          platform={planItem.target_platform}
+          pageName={pageName}
+          imageUrl={isImagePost ? assetQuery.data?.url : undefined}
+          caption={caption}
+          scheduledFor={scheduledFor}
+        />
+        {willCreateStory && <SocialStoryMockup pageName={pageName} imageUrl={assetQuery.data?.url} />}
+      </div>
+    </div>
+  );
+}
+
 function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCancelled: () => void }) {
   const queryClient = useQueryClient();
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
@@ -466,17 +622,31 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
           </CardHeader>
           <CardContent className="space-y-4">
             {publishPreview.published.length > 0 && (
-              <ul className="space-y-2">
-                {publishPreview.published.map((p) => (
-                  <li key={p.plan_item_id} className="rounded-md border border-border p-3 text-sm">
-                    <p className="font-medium">{titleForPlanItem(p.plan_item_id)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Scheduled for {new Date(p.scheduled_for).toLocaleString()}
-                      {p.will_create_story && " · a Story will also be created for review"}
-                    </p>
-                  </li>
-                ))}
-              </ul>
+              <div className="space-y-3">
+                {publishPreview.published.map((p) => {
+                  const planItem = detail.plan_items.find((i) => i.id === p.plan_item_id);
+                  if (!planItem) return null;
+                  const textItem =
+                    planItem.content_type === "image"
+                      ? (detail.plan_items.find(
+                          (i) =>
+                            i.content_type === "text" &&
+                            i.product_id === planItem.product_id &&
+                            i.target_platform === planItem.target_platform,
+                        ) ?? null)
+                      : null;
+                  return (
+                    <PublishPreviewItem
+                      key={p.plan_item_id}
+                      pageName={detail.campaign.name}
+                      planItem={planItem}
+                      textItem={textItem}
+                      scheduledFor={p.scheduled_for}
+                      willCreateStory={p.will_create_story}
+                    />
+                  );
+                })}
+              </div>
             )}
             {publishPreview.skipped.length > 0 && (
               <ul className="space-y-2">
