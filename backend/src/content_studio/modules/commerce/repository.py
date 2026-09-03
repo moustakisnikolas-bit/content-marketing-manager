@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from content_studio.modules.commerce.models import (
     Product,
     ProductAsset,
+    ProductCategory,
     ProductPerformanceSnapshot,
     ProductVariant,
     StoreCapability,
@@ -216,6 +217,48 @@ class CommerceRepository:
     async def list_products_for_connection(self, connection_id: uuid.UUID) -> list[Product]:
         result = await self._session.execute(
             select(Product).where(Product.store_connection_id == connection_id).order_by(Product.title)
+        )
+        return list(result.scalars().all())
+
+    # -- Categories --------------------------------------------
+
+    async def upsert_category(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        store_connection_id: uuid.UUID,
+        external_category_id: str,
+        name: str,
+        parent_external_category_id: str | None,
+    ) -> ProductCategory:
+        result = await self._session.execute(
+            select(ProductCategory).where(
+                ProductCategory.store_connection_id == store_connection_id,
+                ProductCategory.external_category_id == external_category_id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        now = datetime.now(UTC)
+        if existing is not None:
+            existing.name = name
+            existing.parent_external_category_id = parent_external_category_id
+            existing.synced_at = now
+            await self._session.flush()
+            return existing
+
+        category = ProductCategory(
+            organization_id=organization_id, workspace_id=workspace_id, store_connection_id=store_connection_id,
+            external_category_id=external_category_id, name=name,
+            parent_external_category_id=parent_external_category_id, synced_at=now,
+        )
+        self._session.add(category)
+        await self._session.flush()
+        return category
+
+    async def list_categories_for_workspace(self, workspace_id: uuid.UUID) -> list[ProductCategory]:
+        result = await self._session.execute(
+            select(ProductCategory).where(ProductCategory.workspace_id == workspace_id).order_by(ProductCategory.name)
         )
         return list(result.scalars().all())
 

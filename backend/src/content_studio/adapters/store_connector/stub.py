@@ -2,6 +2,8 @@ import uuid
 
 from content_studio.ports.store_connector import (
     CapabilityResult,
+    CategoryData,
+    CategoryPage,
     ProductData,
     ProductPage,
     StoreOAuthToken,
@@ -29,6 +31,15 @@ _CATALOG_TEMPLATE = [
     ("Wool Beanie", "Warm wool beanie, one size fits most.", "19.00", ["wool-beanie-1"]),
     ("Leather Wallet", "Slim bifold wallet in full-grain leather.", "39.00", ["leather-wallet-1", "leather-wallet-2"]),
     ("Enamel Pin Set", "Set of 3 enamel pins.", "9.00", ["enamel-pins-1"]),
+]
+
+# A small two-level tree — enough to exercise real parent/child grouping
+# without a live store's category endpoint.
+_CATEGORY_TEMPLATE = [
+    ("cat-accessories", "Accessories", None),
+    ("cat-bags", "Bags", "cat-accessories"),
+    ("cat-headwear", "Headwear", "cat-accessories"),
+    ("cat-home", "Home", None),
 ]
 
 
@@ -108,3 +119,19 @@ class StubStoreConnectorAdapter:
         next_offset = offset + _PAGE_SIZE
         next_cursor = str(next_offset) if next_offset < len(_CATALOG_TEMPLATE) else None
         return ProductPage(products=products, next_cursor=next_cursor)
+
+    async def list_categories(self, *, access_token: str, cursor: str | None) -> CategoryPage:
+        offset = int(cursor) if cursor else 0
+        page = _CATEGORY_TEMPLATE[offset : offset + _PAGE_SIZE]
+
+        categories = [
+            CategoryData(
+                external_category_id=f"{self._platform}-{external_id}", name=name,
+                parent_external_category_id=f"{self._platform}-{parent_id}" if parent_id else None,
+            )
+            for external_id, name, parent_id in page
+        ]
+
+        next_offset = offset + _PAGE_SIZE
+        next_cursor = str(next_offset) if next_offset < len(_CATEGORY_TEMPLATE) else None
+        return CategoryPage(categories=categories, next_cursor=next_cursor)

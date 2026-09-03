@@ -10,6 +10,8 @@ import httpx
 from content_studio.config import Settings
 from content_studio.ports.store_connector import (
     CapabilityResult,
+    CategoryData,
+    CategoryPage,
     ProductData,
     ProductPage,
     StoreOAuthToken,
@@ -19,6 +21,9 @@ from content_studio.ports.store_connector import (
 
 _STATUS_MAP = {"publish": "active", "draft": "draft"}
 _PAGE_SIZE = 20
+# Categories are typically far fewer than products and carry much less
+# data per row — WooCommerce's own max, to drain the tree in fewer calls.
+_CATEGORY_PAGE_SIZE = 100
 _WEBHOOK_TOPICS = ("product.created", "product.updated", "product.deleted")
 
 
@@ -236,3 +241,31 @@ class WooCommerceAdapter:
             total_pages = int(response.headers.get("X-WP-TotalPages", "1"))
             next_cursor = str(page + 1) if page < total_pages else None
             return ProductPage(products=products, next_cursor=next_cursor)
+
+    async def list_categories(self, *, access_token: str, cursor: str | None) -> CategoryPage:
+        store_domain, consumer_key, consumer_secret = _decode_credentials(access_token)
+        base = store_domain.rstrip("/")
+        auth = (consumer_key, consumer_secret)
+        page = int(cursor) if cursor else 1
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)) as client:
+            response = await client.get(
+                f"{base}/wp-json/wc/v3/products/categories",
+                params={"page": page, "per_page": _CATEGORY_PAGE_SIZE},
+                auth=auth,
+            )
+            raw_categories = _require_json(response)
+
+            categories = [
+                CategoryData(
+                    external_category_id=str(raw["id"]),
+                    name=raw.get("name", ""),
+                    # WooCommerce uses 0 (not null) for "no parent".
+                    parent_external_category_id=str(raw["parent"]) if raw.get("parent") else None,
+                )
+                for raw in raw_categories
+            ]
+
+            total_pages = int(response.headers.get("X-WP-TotalPages", "1"))
+            next_cursor = str(page + 1) if page < total_pages else None
+            return CategoryPage(categories=categories, next_cursor=next_cursor)

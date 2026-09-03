@@ -55,6 +55,19 @@ class ConnectionDetailOut(BaseModel):
 class SyncProductsResponse(BaseModel):
     products_synced: int
     next_cursor: str | None
+    categories_synced: int = 0
+
+
+class CategoryOut(BaseModel):
+    id: uuid.UUID
+    external_category_id: str
+    name: str
+    # The store's own parent category id (matches another row's
+    # external_category_id), not an internal uuid — the frontend builds
+    # the tree from this flat list itself.
+    parent_external_category_id: str | None
+
+    model_config = {"from_attributes": True}
 
 
 class ProductVariantOut(BaseModel):

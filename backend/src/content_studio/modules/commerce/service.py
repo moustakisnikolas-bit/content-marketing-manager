@@ -37,6 +37,7 @@ ABANDONED_CART_GOAL_SLUG = "retargeting"
 class SyncResult:
     products_synced: int
     next_cursor: str | None
+    categories_synced: int = 0
 
 
 @dataclass(frozen=True)
@@ -224,23 +225,31 @@ class CommerceService:
         await self._session.commit()
 
     async def sync_products(self, connection_id: uuid.UUID) -> SyncResult:
-        """Drains the store's *entire* product catalog in one call, not just
-        one page — a single "Sync" click (or the automatic post-webhook
-        catch-up) always ends with every product the store has, instead of
-        silently stopping after one page and leaving the rest for a future
-        click that may never come (confirmed live: ceri.gr's sync cursor
-        sat on page 3 for days with more products never pulled in). Picks
-        up from wherever the stored cursor left off — e.g. mid-drain from a
-        previous call that failed partway — rather than always restarting
-        at page 1."""
+        """Drains the store's *entire* product catalog — and its full
+        category tree — in one call, not just one page — a single "Sync"
+        click (or the automatic post-webhook catch-up) always ends with
+        every product the store has, instead of silently stopping after
+        one page and leaving the rest for a future click that may never
+        come (confirmed live: ceri.gr's sync cursor sat on page 3 for days
+        with more products never pulled in).
+
+        Always restarts from page 1 rather than resuming from a previously
+        stored cursor — confirmed live that resuming by numeric page index
+        is unsafe for a store whose catalog changes over time: WooCommerce
+        orders products by date by default, so "page 3" fetched today can
+        be a different slice of the catalog than "page 3" was when the
+        cursor was saved days earlier, silently skipping whatever shifted
+        out from under it (ceri.gr: resuming from a stale cursor still
+        landed 12 products short of the store's real total). A few extra
+        page fetches on every sync is a cheap price for always reflecting
+        the store's actual current state."""
         connection = await self._repo.get_connection_by_id(connection_id)
         if connection is None:
             raise StoreNotFound(str(connection_id))
         adapter = self._store_adapter_factory(connection.platform)
         access_token = await self._secrets.unseal(reference=connection.access_token_secret_ref)
 
-        cursor_row = await self._repo.get_sync_cursor(connection_id, "products")
-        cursor = cursor_row.cursor if cursor_row else None
+        cursor: str | None = None
         total_synced = 0
 
         while True:
@@ -283,17 +292,38 @@ class CommerceService:
             if cursor is None:
                 break
 
+        category_cursor: str | None = None
+        total_categories_synced = 0
+        while True:
+            category_page = await adapter.list_categories(access_token=access_token, cursor=category_cursor)
+            for category_data in category_page.categories:
+                await self._repo.upsert_category(
+                    organization_id=connection.organization_id,
+                    workspace_id=connection.workspace_id,
+                    store_connection_id=connection.id,
+                    external_category_id=category_data.external_category_id,
+                    name=category_data.name,
+                    parent_external_category_id=category_data.parent_external_category_id,
+                )
+            total_categories_synced += len(category_page.categories)
+            category_cursor = category_page.next_cursor
+            if category_cursor is None:
+                break
+
         await self._repo.set_sync_cursor(connection_id, "products", None)
         await self._repo.set_last_synced(connection)
         await self._audit.record(
             event_type="commerce.products_synced",
             actor_type="service",
             organization_id=connection.organization_id,
-            summary=f"Synced {total_synced} product(s) from {connection.platform}",
-            payload={"connection_id": str(connection_id), "products_synced": total_synced},
+            summary=f"Synced {total_synced} product(s) and {total_categories_synced} categories from {connection.platform}",
+            payload={
+                "connection_id": str(connection_id), "products_synced": total_synced,
+                "categories_synced": total_categories_synced,
+            },
         )
         await self._session.commit()
-        return SyncResult(products_synced=total_synced, next_cursor=None)
+        return SyncResult(products_synced=total_synced, next_cursor=None, categories_synced=total_categories_synced)
 
     async def receive_webhook(
         self,
@@ -724,10 +754,17 @@ def _build_image_edit_prompt(*, product_title: str, campaign_description: str, h
         # state what to preserve, then what to change — and ground the
         # change in the product's own name/scent, not just the generic
         # campaign angle, so a "Whiskey Caramel" candle actually gets a
-        # background that reads as whiskey-and-caramel, not an arbitrary one.
+        # background that reads as whiskey-and-caramel, not an arbitrary
+        # one. The "don't touch the product" constraint is stated at both
+        # the start AND the end (not just once) — confirmed live that a
+        # single mention wasn't enough to stop the model from redrawing
+        # the product itself alongside the background.
         return (
-            f"Keep the product exactly as shown. Restyle the background to a scene that evokes "
-            f"'{product_title}': {campaign_description}"
+            f"Do not change, redraw, redesign, or regenerate the product in the reference image in any way. "
+            f"Its exact shape, color, label, text, and packaging must stay pixel-for-pixel identical to the "
+            f"reference. Only change what is behind and around it: restyle the background to a scene that "
+            f"evokes '{product_title}': {campaign_description}. The product itself must remain completely "
+            f"untouched — do not redraw it."
         )
     return f"{product_title}. {campaign_description}"
 

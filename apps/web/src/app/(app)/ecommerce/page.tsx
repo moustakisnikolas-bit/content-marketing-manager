@@ -146,8 +146,9 @@ function ConnectedStoresCard() {
     setSyncingId(connectionId);
     try {
       const result = await api.syncStoreProducts(connectionId);
-      toast.success(`Synced ${result.products_synced} product(s).`);
+      toast.success(`Synced ${result.products_synced} product(s) and ${result.categories_synced} categories.`);
       await queryClient.invalidateQueries({ queryKey: ["commerce", "products"] });
+      await queryClient.invalidateQueries({ queryKey: ["commerce", "categories"] });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Couldn't sync this store.";
       toast.error(message);

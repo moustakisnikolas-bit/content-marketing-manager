@@ -28,6 +28,7 @@ from content_studio.modules.commerce.schemas import (
     BulkProductCampaignResponse,
     CampaignProposalOut,
     CapabilityOut,
+    CategoryOut,
     ConnectionDetailOut,
     ConnectViaPluginRequest,
     ConnectWithCredentialsRequest,
@@ -231,7 +232,10 @@ async def sync_products(
 
     service = CommerceService(session, secrets=secrets, store_adapter_factory=_adapter_factory)
     result = await service.sync_products(connection_id)
-    return SyncProductsResponse(products_synced=result.products_synced, next_cursor=result.next_cursor)
+    return SyncProductsResponse(
+        products_synced=result.products_synced, next_cursor=result.next_cursor,
+        categories_synced=result.categories_synced,
+    )
 
 
 @router.get("/stores/{connection_id}/products", response_model=list[ProductOut])
@@ -255,6 +259,17 @@ async def list_products(
     repo = CommerceRepository(session)
     products = await repo.list_products_for_workspace(context.workspace_id)
     return [ProductOut.model_validate(p) for p in products]
+
+
+@router.get("/categories", response_model=list[CategoryOut])
+async def list_categories(
+    context: WorkspaceContext = Depends(get_workspace_context), session: AsyncSession = Depends(get_db_session)
+) -> list[CategoryOut]:
+    """Flat list with parent pointers — the frontend builds the tree from
+    this itself rather than the API doing tree-shaping server-side."""
+    repo = CommerceRepository(session)
+    categories = await repo.list_categories_for_workspace(context.workspace_id)
+    return [CategoryOut.model_validate(c) for c in categories]
 
 
 @router.get("/products/{product_id}", response_model=ProductDetailOut)

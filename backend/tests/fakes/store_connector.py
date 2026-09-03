@@ -2,6 +2,7 @@ import uuid
 
 from content_studio.ports.store_connector import (
     CapabilityResult,
+    CategoryPage,
     ProductData,
     ProductPage,
     StoreOAuthToken,
@@ -18,6 +19,7 @@ class FakeStoreConnector:
         *,
         capabilities: list[CapabilityResult] | None = None,
         pages: list[ProductPage] | None = None,
+        category_pages: list[CategoryPage] | None = None,
         webhook_secret: str = "fake-webhook-secret",
     ) -> None:
         self.capabilities = capabilities or [
@@ -25,6 +27,7 @@ class FakeStoreConnector:
             CapabilityResult(capability="receive_webhooks", is_available=True),
         ]
         self._pages = pages
+        self._category_pages = category_pages
         self.webhook_secret = webhook_secret
 
     def get_authorization_url(self, *, state: str) -> str:
@@ -75,3 +78,9 @@ class FakeStoreConnector:
             variants=[],
         )
         return ProductPage(products=[product], next_cursor=None)
+
+    async def list_categories(self, *, access_token: str, cursor: str | None) -> CategoryPage:
+        if self._category_pages is not None:
+            offset = int(cursor) if cursor else 0
+            return self._category_pages[offset]
+        return CategoryPage(categories=[], next_cursor=None)

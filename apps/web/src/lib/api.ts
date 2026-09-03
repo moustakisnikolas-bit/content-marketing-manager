@@ -333,6 +333,7 @@ export interface StoreConnectionDetailOut {
 export interface SyncProductsResponse {
   products_synced: number;
   next_cursor: string | null;
+  categories_synced: number;
 }
 
 export interface ProductOut {
@@ -345,6 +346,15 @@ export interface ProductOut {
   status: string;
   categories: string[];
   synced_at: string;
+}
+
+export interface CategoryOut {
+  id: string;
+  external_category_id: string;
+  name: string;
+  // The store's own parent category id (matches another row's
+  // external_category_id) — build the tree from this flat list client-side.
+  parent_external_category_id: string | null;
 }
 
 export interface BulkProductCampaignResponse {
@@ -586,6 +596,8 @@ export const api = {
   reviewPublicationPlan: (planId: string, payload: { decision: "approved" | "rejected"; comment?: string }) =>
     apiClient.post<{ status: string }>(`/publishing/plans/${planId}/review`, payload),
 
+  deletePublicationPlan: (planId: string) => apiClient.delete<void>(`/publishing/plans/${planId}`),
+
   listMarketingGoals: () => apiClient.get<MarketingGoalOut[]>("/marketing/goals"),
 
   createMarketingBrief: (payload: {
@@ -699,6 +711,8 @@ export const api = {
     apiClient.post<SyncProductsResponse>(`/commerce/stores/${connectionId}/sync`),
 
   listProducts: () => apiClient.get<ProductOut[]>("/commerce/products"),
+
+  listCategories: () => apiClient.get<CategoryOut[]>("/commerce/categories"),
 
   getProduct: (productId: string) => apiClient.get<ProductDetailOut>(`/commerce/products/${productId}`),
 

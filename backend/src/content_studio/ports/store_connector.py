@@ -61,6 +61,22 @@ class ProductPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True)
+class CategoryData:
+    external_category_id: str
+    name: str
+    # None for a top-level category — the store's own parent category id,
+    # not our internal uuid, so the tree can be built from a flat list
+    # without needing parents synced before their children.
+    parent_external_category_id: str | None
+
+
+@dataclass(frozen=True)
+class CategoryPage:
+    categories: list[CategoryData]
+    next_cursor: str | None
+
+
 class StoreConnectorPort(Protocol):
     """Provider-neutral port for a connected store (WooCommerce or
     Shopify — the Phase 6 commitment from 12_ECOMMERCE_MANAGER_MODULE.md).
@@ -93,6 +109,8 @@ class StoreConnectorPort(Protocol):
     async def resolve_capabilities(self, *, access_token: str) -> list[CapabilityResult]: ...
 
     async def list_products(self, *, access_token: str, cursor: str | None) -> ProductPage: ...
+
+    async def list_categories(self, *, access_token: str, cursor: str | None) -> CategoryPage: ...
 
     async def register_webhooks(self, *, access_token: str, webhook_secret: str, delivery_url: str) -> bool:
         """Best-effort webhook auto-provisioning, called once the store's

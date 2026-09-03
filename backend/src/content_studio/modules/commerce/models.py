@@ -106,6 +106,37 @@ class StoreSyncCursor(UUIDPrimaryKeyMixin, Base):
     last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ProductCategory(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Base):
+    """A synced product category, preserving the store's own parent/child
+    hierarchy (e.g. WooCommerce's nested category tree). parent_external_category_id
+    references another row's external_category_id (the store's own id), not
+    our internal uuid — the store's category list order gives no guarantee
+    a parent is synced before its children, and matching on the stable
+    external id sidesteps that entirely. Product.categories stays a flat
+    list of names for matching against this tree's `name` column, rather
+    than adding a many-to-many join table."""
+
+    __tablename__ = "product_categories"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], ondelete="CASCADE",
+            name="fk_product_categories_organization_id_organizations",
+        ),
+        UniqueConstraint("store_connection_id", "external_category_id", name="uq_category_conn_external_id"),
+    )
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    store_connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("store_connections.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_category_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    parent_external_category_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class Product(UUIDPrimaryKeyMixin, TimestampMixin, TenantScopedMixin, Base):
     """A synced product. raw_payload keeps the provider-native response
     verbatim, per the same dual-storage discipline used for metrics — the
