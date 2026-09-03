@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -123,6 +124,35 @@ async def _seed_product(session: AsyncSession, ctx: dict):
     await service.sync_products(connection.id)
     repo = CommerceRepository(session)
     return (await repo.list_products_for_connection(connection.id))[0]
+
+
+async def _seed_two_products(session: AsyncSession, ctx: dict) -> list:
+    pages = [
+        ProductPage(
+            products=[
+                ProductData(
+                    external_product_id="p1", title="Whiskey Caramel 200γρ.", description="A cozy candle",
+                    price="10.00", currency="USD", status="active", raw_payload={},
+                    image_urls=["https://example.com/whiskey-caramel.jpg"],
+                ),
+                ProductData(
+                    external_product_id="p2", title="Vanilla Dream 200γρ.", description="A sweet candle",
+                    price="12.00", currency="USD", status="active", raw_payload={},
+                    image_urls=["https://example.com/vanilla-dream.jpg"],
+                ),
+            ],
+            next_cursor=None,
+        ),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = CommerceService(session, secrets=FakeSecrets(), store_adapter_factory=lambda _platform: adapter)
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user"].id,
+        platform="woocommerce", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+    repo = CommerceRepository(session)
+    return sorted(await repo.list_products_for_connection(connection.id), key=lambda p: p.title)
 
 
 async def _seed_approved_item(session: AsyncSession, ctx: dict, *, content_type: str, title: str, text_body: str) -> tuple:
@@ -434,3 +464,48 @@ async def test_publish_approved_publishes_one_product_to_each_target_platform_se
     instagram_plan = await publishing_repo.get_publication_plan_by_id(published_by_platform["instagram"].publication_plan_id)
     assert facebook_plan.platform_connection_id == facebook_connection.id
     assert instagram_plan.platform_connection_id == instagram_connection.id
+
+
+async def test_publish_approved_spreads_items_across_weeks_when_items_per_week_is_smaller_than_group_count(
+    db_session: AsyncSession,
+) -> None:
+    """With items_per_week=1, two approved products can't both land in the
+    same calendar week — the second must roll into the following week at
+    the same top-ranked (weekday, hour) slot, per suggest_weekly_schedule()."""
+    ctx = await _seed_workspace(db_session)
+    products = await _seed_two_products(db_session, ctx)
+
+    publishing_repo = PublishingRepository(db_session)
+    await publishing_repo.create_connection(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        connected_by_user_id=ctx["user"].id, platform="instagram", external_account_id="ig-fake-1",
+        external_account_name="Fake IG", access_token_secret_ref="sealed-ref", refresh_token_secret_ref=None,
+        scopes=[],
+    )
+
+    marketing_service = MarketingService(db_session)
+    brief = await marketing_service.create_brief(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user"].id,
+        goal_slug=ctx["goal_slug"], what_to_promote="candle launch", mode="guided", target_platforms=["instagram"],
+    )
+    proposal = await marketing_service.generate_proposal(brief.id)
+    campaign = await marketing_service.approve_proposal(
+        proposal_id=proposal.id, user_id=ctx["user"].id, campaign_name="Candle Launch"
+    )
+
+    for i, product in enumerate(products):
+        await _seed_platform_pair(
+            db_session, ctx, campaign, product, platform="instagram", sequence_start=90 + i * 2,
+            caption=f"Caption for {product.title}.",
+        )
+
+    response = await publish_approved(
+        campaign_id=campaign.id, items_per_week=1, current_user=ctx["user"], context=_context(ctx),
+        session=db_session, temporal=_FakeTemporalClient(), object_storage=FakeObjectStorage(),
+    )
+
+    assert response.skipped == []
+    assert len(response.published) == 2
+    scheduled = sorted(p.scheduled_for for p in response.published)
+    # Same top-ranked (weekday, hour) slot both times, one calendar week apart.
+    assert scheduled[1] - scheduled[0] == timedelta(days=7)

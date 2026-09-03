@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 import httpx
@@ -50,6 +50,14 @@ class BulkCampaignResult:
     campaign_id: uuid.UUID
     prepared_items: list[BulkPlanItemPrepared]
     failed_product_ids: list[uuid.UUID]
+    # (new_item, primary_item) pairs — a product's image is generated once
+    # and shared across its target platforms (see build_bulk_plan_items),
+    # so a platform beyond the first never gets its own entry in
+    # prepared_items; the caller resolves these once primary_item's real
+    # job exists, copying its content_item_id/generation_job_id/status
+    # onto new_item instead of dispatching a second, necessarily-different
+    # image generation for the same product.
+    shared_image_plan_items: list[tuple[CampaignPlanItem, CampaignPlanItem]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -384,13 +392,19 @@ class CommerceService:
         batch's shared `description`, and a style reference sampled once from the
         workspace's own recently-published Meta posts (best-effort — a
         missing connection or API failure just means no style reference,
-        never blocks generation). Does NOT start Temporal workflows for the
-        text items — same split as prepare_item_generation(), since
-        starting N workflows concurrently needs to happen outside any
-        single AsyncSession-bound call, at the API layer. Image items get
-        even less here: only a bare "pending" CampaignPlanItem row, no
-        ContentItem/GenerationJob at all — see prepare_paired_image_generation()
-        for why (dispatch is deferred until the paired text is approved)."""
+        never blocks generation). Does NOT start Temporal workflows for
+        either — same split as prepare_item_generation(), since starting N
+        workflows concurrently needs to happen outside any single
+        AsyncSession-bound call, at the API layer (see
+        bulk_generate_product_campaign() in api/v1/commerce.py). Image
+        generation is prepared right away too, in parallel with its
+        paired text — not deferred until the caption is approved — so
+        both are ready together for one combined review. A product
+        targeting more than one platform gets its image generated only
+        once: the first platform's image item is a real
+        BulkPlanItemPrepared, every later platform's is recorded in
+        result.shared_image_plan_items instead, to be linked to that same
+        generation once it's dispatched rather than repeated."""
         marketing_service = MarketingService(self._session)
         marketing_repo = MarketingRepository(self._session)
 
@@ -434,6 +448,7 @@ class CommerceService:
         platforms: list[str | None] = list(target_platforms) if target_platforms else [None]
 
         prepared_items: list[BulkPlanItemPrepared] = []
+        shared_image_plan_items: list[tuple[CampaignPlanItem, CampaignPlanItem]] = []
         failed_product_ids: list[uuid.UUID] = []
         for product_id in product_ids:
             # get_product_with_details_by_id (not get_product_by_id) — its
@@ -447,6 +462,13 @@ class CommerceService:
 
             content_title = _strip_product_size(product.title)
             reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
+            # A product's image is generated once and shared across every
+            # platform it targets (Facebook and Instagram show the same
+            # photo, only the caption differs) — set on the first platform
+            # that actually dispatches a real generation, reused for every
+            # platform after it instead of running AI image generation
+            # again for what should be an identical result.
+            primary_image_item: CampaignPlanItem | None = None
 
             for target_platform in platforms:
                 sequence_number += 1
@@ -469,23 +491,30 @@ class CommerceService:
 
                 if generate_images:
                     sequence_number += 1
-                    # Preview only — the brief actually used for generation is
-                    # rebuilt from scratch by prepare_paired_image_generation()
-                    # once the paired text item is approved, re-reading the
-                    # product's photo fresh at that point rather than trusting
-                    # whatever it looked like right now. No ContentItem/
-                    # GenerationJob/workflow starts for this item here — it
-                    # stays "pending" until that approval (or a manual Start,
-                    # gated the same way) dispatches it.
                     image_brief = _build_image_edit_prompt(
                         product_title=content_title, campaign_description=description,
                         has_reference_image=reference_image_url is not None,
                     )
-                    await marketing_repo.create_plan_item(
+                    image_item = await marketing_repo.create_plan_item(
                         campaign_id=campaign.id, sequence_number=sequence_number, title=f"{product.title} (image)",
                         brief_text=image_brief, target_platform=target_platform,
                         product_id=product.id, content_type="image",
                     )
+                    if primary_image_item is None:
+                        # Dispatched immediately, in parallel with the text
+                        # item above — not deferred until the caption is
+                        # approved — so both are ready together for one
+                        # combined review, instead of the image only
+                        # starting once the caption's already been decided.
+                        prepared = await marketing_service.prepare_item_generation(
+                            image_item, reference_image_url=reference_image_url
+                        )
+                        prepared_items.append(
+                            BulkPlanItemPrepared(plan_item=image_item, prepared=replace(prepared, brief_text=image_brief))
+                        )
+                        primary_image_item = image_item
+                    else:
+                        shared_image_plan_items.append((image_item, primary_image_item))
 
         await self._audit.record(
             event_type="commerce.bulk_product_campaign_prepared",
@@ -504,7 +533,8 @@ class CommerceService:
         )
         await self._session.commit()
         return BulkCampaignResult(
-            campaign_id=campaign.id, prepared_items=prepared_items, failed_product_ids=failed_product_ids
+            campaign_id=campaign.id, prepared_items=prepared_items, failed_product_ids=failed_product_ids,
+            shared_image_plan_items=shared_image_plan_items,
         )
 
     async def generate_abandoned_cart_content(

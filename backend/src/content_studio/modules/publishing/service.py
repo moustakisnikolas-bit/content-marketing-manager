@@ -279,7 +279,7 @@ class PublishingService:
         if matches:
             # Best-effort: this is how metric_snapshots actually gets real
             # data going forward (previously only reachable via a manual,
-            # never-called API endpoint) so suggest_next_scheduling_slots()
+            # never-called API endpoint) so suggest_weekly_schedule()
             # has real history to learn from. A failure here must never
             # undo reconcile()'s own already-committed result.
             ingestion = MetricsIngestionService(

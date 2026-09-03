@@ -441,6 +441,7 @@ async def remove_plan_item(
 async def publish_approved(
     campaign_id: uuid.UUID,
     dry_run: bool = False,
+    items_per_week: int = 7,
     current_user: User = Depends(get_current_user),
     context: WorkspaceContext = Depends(get_workspace_context),
     session: AsyncSession = Depends(get_db_session),
@@ -456,12 +457,15 @@ async def publish_approved(
     the real post carries real text, then publishes the image (a
     text-only product with no paired image publishes its text directly,
     unchanged from before). Schedules each post on this workspace's own
-    best-performing time (RecommendationEngine.suggest_next_scheduling_slots,
-    one slot per day so a bulk publish doesn't blast everything out at
-    once), self-approves the PublicationPlan it creates (the explicit
-    "Publish approved" click IS the approval — same pattern as the
-    paired-image auto-dispatch), and — for an Instagram post — also
-    creates a companion Story plan item for its own separate review.
+    best-performing (weekday, hour) slots (RecommendationEngine.suggest_weekly_schedule),
+    at most `items_per_week` per calendar week — anything beyond that
+    rolls into the following week at the same ranked slots rather than
+    landing on consecutive days regardless of volume. Self-approves the
+    PublicationPlan it creates (the explicit "Publish approved" click IS
+    the approval — same pattern as the paired-image auto-dispatch), and —
+    for an Instagram post — also creates a companion Story plan item for
+    its own separate review; a Story doesn't consume its own weekly slot,
+    it publishes on its own approval same as before.
 
     dry_run=True runs the exact same grouping/validation/scheduling logic
     (so the returned scheduled_for times are the real times a live call
@@ -492,8 +496,8 @@ async def publish_approved(
 
     groups = list(products.items())
     slots = (
-        await RecommendationEngine(session).suggest_next_scheduling_slots(
-            organization_id=context.organization_id, workspace_id=context.workspace_id, count=len(groups)
+        await RecommendationEngine(session).suggest_weekly_schedule(
+            workspace_id=context.workspace_id, count=len(groups), items_per_week=items_per_week
         )
         if groups
         else []

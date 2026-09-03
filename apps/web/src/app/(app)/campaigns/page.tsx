@@ -77,7 +77,7 @@ function AutoPilotSection({ campaignId }: { campaignId: string }) {
 
 function PlanItemReviewPanel({
   campaignId,
-  item,
+  items,
   hasPrevious,
   hasNext,
   onNavigate,
@@ -85,7 +85,10 @@ function PlanItemReviewPanel({
   onClose,
 }: {
   campaignId: string;
-  item: CampaignPlanItemOut;
+  // Usually one item. When a text+image pair for the same product/platform
+  // both reached awaiting_review together, this holds both — reviewed and
+  // decided as a single combined post (see the "combined review" plan).
+  items: CampaignPlanItemOut[];
   hasPrevious: boolean;
   hasNext: boolean;
   onNavigate: (direction: "previous" | "next") => void;
@@ -95,28 +98,49 @@ function PlanItemReviewPanel({
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [instructions, setInstructions] = useState("");
-  const [promptDraft, setPromptDraft] = useState(item.brief_text);
+  const isImageLike = (i: CampaignPlanItemOut) => i.content_type === "image" || i.content_type === "story";
+  const imageItem = items.find(isImageLike) ?? null;
+  const [promptDraft, setPromptDraft] = useState(imageItem?.brief_text ?? "");
   const [regenerating, setRegenerating] = useState(false);
-  const isImageLike = item.content_type === "image" || item.content_type === "story";
+  const [primary, secondary] = items;
 
-  const { data: detail } = useQuery({
-    queryKey: ["content", "items", item.content_item_id],
-    queryFn: () => api.getContentItem(item.content_item_id!),
-    enabled: !!item.content_item_id,
+  const primaryQuery = useQuery({
+    queryKey: ["content", "items", primary.content_item_id],
+    queryFn: () => api.getContentItem(primary.content_item_id!),
+    enabled: !!primary.content_item_id,
   });
-  const latestRevision = detail?.revisions.at(-1);
+  const secondaryQuery = useQuery({
+    queryKey: ["content", "items", secondary?.content_item_id],
+    queryFn: () => api.getContentItem(secondary?.content_item_id ?? ""),
+    enabled: !!secondary?.content_item_id,
+  });
+  const primaryRevision = primaryQuery.data?.revisions.at(-1);
+  const secondaryRevision = secondary ? secondaryQuery.data?.revisions.at(-1) : undefined;
+  const ready = !!primaryRevision && (!secondary || !!secondaryRevision);
 
   const handleReview = async (decision: "approved" | "rejected") => {
-    if (!latestRevision || !item.generation_job_id) return;
+    const targets = [
+      { item: primary, revision: primaryRevision },
+      ...(secondary ? [{ item: secondary, revision: secondaryRevision }] : []),
+    ].filter((t): t is { item: CampaignPlanItemOut; revision: NonNullable<typeof t.revision> } =>
+      !!t.item.generation_job_id && !!t.revision,
+    );
+    if (targets.length === 0) return;
     setBusy(true);
     try {
-      await api.reviewGenerationJob(item.generation_job_id, {
-        decision,
-        revision_id: latestRevision.id,
-        comment: decision === "rejected" ? instructions.trim() || undefined : undefined,
-      });
+      await Promise.all(
+        targets.map((t) =>
+          api.reviewGenerationJob(t.item.generation_job_id!, {
+            decision,
+            revision_id: t.revision.id,
+            comment: decision === "rejected" ? instructions.trim() || undefined : undefined,
+          }),
+        ),
+      );
       toast.success(
-        decision === "approved" ? "Approved" : "Rejected — a new attempt is being generated with your feedback",
+        decision === "approved"
+          ? `Approved${targets.length > 1 ? " both" : ""}`
+          : `Rejected${targets.length > 1 ? " — both parts are being regenerated" : " — a new attempt is being generated"} with your feedback`,
       );
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
       onDecided();
@@ -128,10 +152,10 @@ function PlanItemReviewPanel({
   };
 
   const handleRegenerate = async () => {
-    if (!item.generation_job_id || !promptDraft.trim()) return;
+    if (!imageItem?.generation_job_id || !promptDraft.trim()) return;
     setRegenerating(true);
     try {
-      await api.regenerateGenerationJob(item.generation_job_id, promptDraft.trim());
+      await api.regenerateGenerationJob(imageItem.generation_job_id, promptDraft.trim());
       toast.success("Recreating the image with the updated prompt — check back shortly.");
       await queryClient.invalidateQueries({ queryKey: ["marketing", "campaign", campaignId] });
       onDecided();
@@ -142,14 +166,17 @@ function PlanItemReviewPanel({
     }
   };
 
+  const revisionFor = (item: CampaignPlanItemOut) => (item.id === primary.id ? primaryRevision : secondaryRevision);
+  const queryFor = (item: CampaignPlanItemOut) => (item.id === primary.id ? primaryQuery : secondaryQuery);
+
   return (
     <Card className="border-primary/30">
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
           <div>
-            <CardTitle className="text-base">{item.title}</CardTitle>
+            <CardTitle className="text-base">{primary.title}</CardTitle>
             <CardDescription>
-              {item.content_type} {item.target_platform && `· ${item.target_platform}`}
+              {items.map((i) => i.content_type).join(" + ")} {primary.target_platform && `· ${primary.target_platform}`}
             </CardDescription>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -158,24 +185,32 @@ function PlanItemReviewPanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {detail && latestRevision ? (
-          <RevisionPreview
-            revision={latestRevision}
-            // A Story plan item's underlying generated content is still an
-            // image (see prepare_story_image_generation in commerce/service.py) —
-            // only CampaignPlanItem.content_type says "story".
-            contentType={item.content_type === "story" ? "image" : item.content_type}
-            onEdited={() => queryClient.invalidateQueries({ queryKey: ["content", "items"] })}
-          />
-        ) : (
-          <p className="text-sm text-muted-foreground">Loading preview...</p>
-        )}
+        {items.map((i) => {
+          const revision = revisionFor(i);
+          const query = queryFor(i);
+          return (
+            <div key={i.id} className="space-y-1">
+              {query.data && revision ? (
+                <RevisionPreview
+                  revision={revision}
+                  // A Story plan item's underlying generated content is still an
+                  // image (see prepare_story_image_generation in commerce/service.py) —
+                  // only CampaignPlanItem.content_type says "story".
+                  contentType={i.content_type === "story" ? "image" : i.content_type}
+                  onEdited={() => queryClient.invalidateQueries({ queryKey: ["content", "items"] })}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">Loading preview...</p>
+              )}
+            </div>
+          );
+        })}
 
-        {isImageLike && (
+        {imageItem && (
           <div className="space-y-1 rounded-md border border-border p-3">
-            <Label htmlFor={`prompt-${item.id}`}>Image prompt</Label>
+            <Label htmlFor={`prompt-${imageItem.id}`}>Image prompt</Label>
             <textarea
-              id={`prompt-${item.id}`}
+              id={`prompt-${imageItem.id}`}
               rows={3}
               className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
               value={promptDraft}
@@ -198,9 +233,9 @@ function PlanItemReviewPanel({
         )}
 
         <div className="space-y-1">
-          <Label htmlFor={`instructions-${item.id}`}>What should change? (optional, used if you reject)</Label>
+          <Label htmlFor={`instructions-${primary.id}`}>What should change? (optional, used if you reject)</Label>
           <textarea
-            id={`instructions-${item.id}`}
+            id={`instructions-${primary.id}`}
             rows={2}
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none"
             placeholder="e.g. make the tone more playful, mention the discount code"
@@ -219,16 +254,16 @@ function PlanItemReviewPanel({
             </Button>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" disabled={busy || regenerating || !latestRevision} onClick={() => handleReview("approved")}>
-              Approve
+            <Button size="sm" disabled={busy || regenerating || !ready} onClick={() => handleReview("approved")}>
+              {secondary ? "Approve both" : "Approve"}
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || regenerating || !latestRevision}
+              disabled={busy || regenerating || !ready}
               onClick={() => handleReview("rejected")}
             >
-              Reject
+              {secondary ? "Reject both" : "Reject"}
             </Button>
           </div>
         </div>
@@ -247,6 +282,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   const [publishing, setPublishing] = useState(false);
   const [publishPreview, setPublishPreview] = useState<PublishApprovedResponse | null>(null);
   const [confirmingPublish, setConfirmingPublish] = useState(false);
+  const [itemsPerWeek, setItemsPerWeek] = useState(7);
 
   const { data: detail } = useQuery({
     queryKey: ["marketing", "campaign", campaignId],
@@ -302,7 +338,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   const handlePreviewPublish = async () => {
     setPublishing(true);
     try {
-      const preview = await api.publishApprovedCampaign(campaignId, { dryRun: true });
+      const preview = await api.publishApprovedCampaign(campaignId, { dryRun: true, itemsPerWeek });
       if (preview.published.length === 0 && preview.skipped.length === 0) {
         toast.info("Nothing ready to publish yet — approve some content first.");
       } else {
@@ -318,7 +354,7 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   const handleConfirmPublish = async () => {
     setConfirmingPublish(true);
     try {
-      const result = await api.publishApprovedCampaign(campaignId);
+      const result = await api.publishApprovedCampaign(campaignId, { itemsPerWeek });
       const storyCount = result.published.filter((p) => p.will_create_story).length;
       toast.success(
         `Published ${result.published.length} post(s)` +
@@ -354,23 +390,54 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
   if (!detail) return null;
 
   const reviewableItems = detail.plan_items.filter((i) => i.status === "awaiting_review");
-  const reviewingIndex = reviewableItems.findIndex((i) => i.id === reviewingId);
-  const reviewingItem = reviewingIndex >= 0 ? reviewableItems[reviewingIndex] : null;
+
+  // A text+image pair generated together for the same product/platform
+  // reviews as one combined post once both sides are ready; anything else
+  // (a lone item still waiting on its pair, a Story, a non-product item)
+  // still reviews standalone. See the "combined review" plan.
+  const reviewGroups: CampaignPlanItemOut[][] = [];
+  const consumed = new Set<string>();
+  for (const item of reviewableItems) {
+    if (consumed.has(item.id)) continue;
+    if ((item.content_type === "text" || item.content_type === "image") && item.product_id) {
+      const pairType = item.content_type === "text" ? "image" : "text";
+      const pair = reviewableItems.find(
+        (other) =>
+          !consumed.has(other.id) &&
+          other.id !== item.id &&
+          other.content_type === pairType &&
+          other.product_id === item.product_id &&
+          other.target_platform === item.target_platform,
+      );
+      if (pair) {
+        consumed.add(item.id);
+        consumed.add(pair.id);
+        reviewGroups.push(item.content_type === "text" ? [item, pair] : [pair, item]);
+        continue;
+      }
+    }
+    consumed.add(item.id);
+    reviewGroups.push([item]);
+  }
+
+  const reviewingIndex = reviewGroups.findIndex((g) => g.some((i) => i.id === reviewingId));
+  const reviewingGroup = reviewingIndex >= 0 ? reviewGroups[reviewingIndex] : null;
 
   const handleNavigate = (direction: "previous" | "next") => {
     const nextIndex = reviewingIndex + (direction === "next" ? 1 : -1);
-    if (nextIndex >= 0 && nextIndex < reviewableItems.length) {
-      setReviewingId(reviewableItems[nextIndex].id);
+    if (nextIndex >= 0 && nextIndex < reviewGroups.length) {
+      setReviewingId(reviewGroups[nextIndex][0].id);
     }
   };
 
   const handleDecided = () => {
-    // Picks the next item from the list as it stood *before* this decision
-    // — the item just decided will drop out of reviewableItems once the
+    // Picks the next group from the list as it stood *before* this decision
+    // — the group just decided will drop out of reviewGroups once the
     // campaign query refetches, so index-chasing after that would skip one.
-    const nextIndex = reviewingIndex + 1 < reviewableItems.length ? reviewingIndex + 1 : reviewingIndex - 1;
-    const next = nextIndex >= 0 && nextIndex < reviewableItems.length ? reviewableItems[nextIndex] : null;
-    setReviewingId(next && next.id !== reviewingId ? next.id : null);
+    const nextIndex = reviewingIndex + 1 < reviewGroups.length ? reviewingIndex + 1 : reviewingIndex - 1;
+    const next = nextIndex >= 0 && nextIndex < reviewGroups.length ? reviewGroups[nextIndex] : null;
+    const nextId = next?.[0]?.id ?? null;
+    setReviewingId(nextId && nextId !== reviewingId ? nextId : null);
   };
 
   const titleForPlanItem = (planItemId: string) =>
@@ -392,8 +459,9 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
           <CardHeader>
             <CardTitle className="text-base">Review before publishing</CardTitle>
             <CardDescription>
-              Nothing has gone out yet — these are the real times each post would be scheduled for. Posts are
-              spaced one per day so they don&apos;t all publish at once.
+              Nothing has gone out yet — these are the real times each post would be scheduled for, paced at{" "}
+              {itemsPerWeek} per week using your best-performing days and times. Anything beyond that spreads into
+              future weeks at the same pace.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -436,13 +504,13 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
         </Card>
       )}
 
-      {reviewingItem && (
+      {reviewingGroup && (
         <PlanItemReviewPanel
-          key={reviewingItem.id}
+          key={reviewingGroup.map((i) => i.id).join("-")}
           campaignId={campaignId}
-          item={reviewingItem}
+          items={reviewingGroup}
           hasPrevious={reviewingIndex > 0}
-          hasNext={reviewingIndex < reviewableItems.length - 1}
+          hasNext={reviewingIndex < reviewGroups.length - 1}
           onNavigate={handleNavigate}
           onDecided={handleDecided}
           onClose={() => setReviewingId(null)}
@@ -465,6 +533,17 @@ function CampaignDetail({ campaignId, onCancelled }: { campaignId: string; onCan
                   <Button size="sm" variant="outline" disabled={refreshingPhotos} onClick={handleRefreshPhotos}>
                     {refreshingPhotos ? "Refreshing..." : "Refresh product photos"}
                   </Button>
+                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    Posts/week
+                    <input
+                      type="number"
+                      min={1}
+                      max={28}
+                      value={itemsPerWeek}
+                      onChange={(e) => setItemsPerWeek(Math.max(1, Math.min(28, Number(e.target.value) || 1)))}
+                      className="h-8 w-14 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                    />
+                  </label>
                   <Button size="sm" disabled={publishing} onClick={handlePreviewPublish}>
                     {publishing ? "Checking..." : "Publish approved"}
                   </Button>

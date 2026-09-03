@@ -610,10 +610,15 @@ export const api = {
   removePlanItem: (campaignId: string, itemId: string) =>
     apiClient.post<{ status: string }>(`/marketing/campaigns/${campaignId}/items/${itemId}/remove`),
 
-  publishApprovedCampaign: (campaignId: string, options?: { dryRun?: boolean }) =>
-    apiClient.post<PublishApprovedResponse>(
-      `/marketing/campaigns/${campaignId}/publish-approved${options?.dryRun ? "?dry_run=true" : ""}`,
-    ),
+  publishApprovedCampaign: (campaignId: string, options?: { dryRun?: boolean; itemsPerWeek?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.dryRun) params.set("dry_run", "true");
+    if (options?.itemsPerWeek !== undefined) params.set("items_per_week", String(options.itemsPerWeek));
+    const query = params.toString();
+    return apiClient.post<PublishApprovedResponse>(
+      `/marketing/campaigns/${campaignId}/publish-approved${query ? `?${query}` : ""}`,
+    );
+  },
 
   createAutoPilotPolicy: (
     campaignId: string,

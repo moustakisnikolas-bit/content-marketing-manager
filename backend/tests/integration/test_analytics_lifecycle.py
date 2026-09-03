@@ -262,48 +262,56 @@ async def test_best_posting_time_reports_low_confidence_with_few_samples(db_sess
     assert "low" in recommendation.explanation.lower()
 
 
-async def test_suggest_next_scheduling_slots_falls_back_with_no_history(db_session: AsyncSession) -> None:
+async def test_rank_weekly_slots_falls_back_with_no_history(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     engine = RecommendationEngine(db_session)
 
-    slots = await engine.suggest_next_scheduling_slots(
-        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], count=3
-    )
+    ranked = await engine.rank_weekly_slots(workspace_id=ctx["workspace_id"])
 
-    assert len(slots) == 3
-    assert all(slot.hour == 19 for slot in slots)  # fixed weekday-evening default
-    assert slots[1] == slots[0] + timedelta(days=1)
-    assert slots[2] == slots[0] + timedelta(days=2)
-    assert all(slot > datetime.now(UTC) for slot in slots)
+    assert len(ranked) == 28
+    assert len(set(ranked)) == 28  # no duplicate (weekday, hour) pairs
+    assert ranked[0] == (0, 19)  # _FALLBACK_WEEKLY_ORDER[0]: Monday evening
 
 
-async def test_suggest_next_scheduling_slots_anchors_on_winning_daypart(db_session: AsyncSession) -> None:
+async def test_rank_weekly_slots_promotes_real_data_over_fallback_ordering(db_session: AsyncSession) -> None:
     ctx = await _seed_workspace(db_session)
     analytics_repo = AnalyticsRepository(db_session)
     definition = await analytics_repo.get_metric_definition_by_name("engagement_rate")
 
-    async def _snapshot(hour: int, value: str) -> None:
-        await analytics_repo.create_metric_snapshot(
-            organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
-            metric_definition_id=definition.id, raw_provider_name="facebook", raw_payload={},
-            normalized_value=Decimal(value),
-            measurement_time=datetime.now(UTC).replace(hour=hour, minute=0, second=0, microsecond=0),
-            collection_time=datetime.now(UTC),
-        )
-
-    # Morning (5-11) samples score higher than evening (17-23) samples here.
-    await _snapshot(9, "0.30")
-    await _snapshot(10, "0.28")
-    await _snapshot(20, "0.05")
+    # Wednesday night (weekday=2, anchor hour=3) sits dead last in the
+    # fixed fallback ordering — real data here must still rank it first.
+    wednesday_night = datetime(2024, 1, 3, 3, 0, tzinfo=UTC)  # 2024-01-01 was a Monday
+    await analytics_repo.create_metric_snapshot(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"],
+        metric_definition_id=definition.id, raw_provider_name="facebook", raw_payload={},
+        normalized_value=Decimal("0.90"), measurement_time=wednesday_night, collection_time=datetime.now(UTC),
+    )
     await db_session.commit()
 
     engine = RecommendationEngine(db_session)
-    slots = await engine.suggest_next_scheduling_slots(
-        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], count=2
-    )
+    ranked = await engine.rank_weekly_slots(workspace_id=ctx["workspace_id"])
 
-    assert all(slot.hour == 9 for slot in slots)  # morning daypart's anchor hour
-    assert slots[1] == slots[0] + timedelta(days=1)
+    assert ranked[0] == (2, 3)
+    assert len(ranked) == 28
+
+
+async def test_suggest_weekly_schedule_spreads_across_weeks_by_items_per_week(db_session: AsyncSession) -> None:
+    ctx = await _seed_workspace(db_session)
+    engine = RecommendationEngine(db_session)
+
+    schedule = await engine.suggest_weekly_schedule(workspace_id=ctx["workspace_id"], count=5, items_per_week=2)
+
+    assert len(schedule) == 5
+    assert all(slot > datetime.now(UTC) for slot in schedule)
+    # Within a week, the two slots use the top two fallback-ranked
+    # (weekday, hour) pairs — Monday then Tuesday evening.
+    assert (schedule[0].weekday(), schedule[0].hour) == (0, 19)
+    assert (schedule[1].weekday(), schedule[1].hour) == (1, 19)
+    # The 3rd/4th items roll into the following week at the same two
+    # slots; the 5th, two weeks out — never dumped into the next few days.
+    assert schedule[2] == schedule[0] + timedelta(days=7)
+    assert schedule[3] == schedule[1] + timedelta(days=7)
+    assert schedule[4] == schedule[2] + timedelta(days=7)
 
 
 async def _attach_snapshots(

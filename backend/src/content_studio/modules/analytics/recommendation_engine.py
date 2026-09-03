@@ -38,10 +38,35 @@ _DAYPARTS: list[tuple[str, range]] = [
 # Anchor clock hour used to turn a winning daypart into an actual
 # scheduled_for datetime — the midpoint of each bucket's range.
 _DAYPART_ANCHOR_HOUR = {"night": 3, "morning": 9, "afternoon": 14, "evening": 19}
-# No history yet -> a clearly-labeled fixed default (weekday evening),
-# never a fabricated "data-driven" claim. Same honesty rule
-# generate_best_posting_time() follows via InsufficientData.
-_FALLBACK_DAYPART = "evening"
+
+# Fixed, honest fallback ordering for (weekday, daypart) buckets with no
+# real history yet — weekday evenings first (typically the highest social
+# engagement window), then weekday afternoons, weekend evenings/afternoons,
+# weekday mornings, and finally every night bucket last. Never claims to
+# be data-driven; rank_weekly_slots() only reaches into this for buckets
+# real history hasn't covered, so it always has a full week of slots to
+# offer without ever dressing up a guess as a result. weekday follows
+# Python's datetime.weekday(): Monday=0 .. Sunday=6. Covers all 7*4=28
+# (weekday, daypart) combinations exactly once.
+_FALLBACK_WEEKLY_ORDER: list[tuple[int, str]] = [
+    (0, "evening"), (1, "evening"), (2, "evening"), (3, "evening"), (4, "evening"),
+    (5, "morning"), (6, "morning"),
+    (0, "afternoon"), (1, "afternoon"), (2, "afternoon"), (3, "afternoon"), (4, "afternoon"),
+    (5, "evening"), (6, "evening"),
+    (5, "afternoon"), (6, "afternoon"),
+    (0, "morning"), (1, "morning"), (2, "morning"), (3, "morning"), (4, "morning"),
+    (0, "night"), (1, "night"), (2, "night"), (3, "night"), (4, "night"), (5, "night"), (6, "night"),
+]
+
+
+def _next_occurrence(now: datetime, *, weekday: int, hour: int, weeks_out: int = 0) -> datetime:
+    """The next real datetime landing on `weekday` (Monday=0..Sunday=6) at
+    `hour`, pushed out by an additional `weeks_out` full weeks."""
+    days_ahead = (weekday - now.weekday()) % 7
+    candidate = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate + timedelta(weeks=weeks_out)
 
 
 def confidence_for_sample_size(n: int) -> str:
@@ -155,35 +180,58 @@ class RecommendationEngine:
             created_at=now,
         )
 
-    async def suggest_next_scheduling_slots(
-        self,
-        *,
-        organization_id: uuid.UUID,
-        workspace_id: uuid.UUID,
-        count: int,
-        metric_name: str = "engagement_rate",
-    ) -> list[datetime]:
-        """The next `count` future publish times, one per day, anchored on
-        the hour this workspace's own publish history shows performs best.
-        Wraps generate_best_posting_time() (which also persists a
-        Recommendation row, same as calling it directly) and falls back to
-        a fixed weekday-evening default when there isn't enough history
-        yet, rather than surfacing InsufficientData to a bulk-publish
-        caller that has no UI for it."""
-        try:
-            recommendation = await self.generate_best_posting_time(
-                organization_id=organization_id, workspace_id=workspace_id, metric_name=metric_name
+    async def rank_weekly_slots(
+        self, *, workspace_id: uuid.UUID, metric_name: str = "engagement_rate",
+    ) -> list[tuple[int, int]]:
+        """Every (weekday, anchor_hour) combination ranked best-to-worst —
+        real-data buckets first (descending average `metric_name`, from
+        this workspace's own ingested Meta post history), then
+        `_FALLBACK_WEEKLY_ORDER` fills in any bucket with no samples yet.
+        weekday follows Python's datetime.weekday(): Monday=0..Sunday=6.
+        Always returns all 28 combinations — real data never runs out of
+        slots to fall back to, and a bucket with real samples always
+        outranks one without, however few samples it has."""
+        definition = await self._repo.get_metric_definition_by_name(metric_name)
+        snapshots = (
+            await self._repo.list_snapshots_for_workspace_metric(
+                workspace_id=workspace_id, metric_definition_id=definition.id
             )
-            daypart = recommendation.evidence["best_bucket"]
-        except (InsufficientData, UnknownMetric):
-            daypart = _FALLBACK_DAYPART
+            if definition is not None
+            else []
+        )
 
-        hour = _DAYPART_ANCHOR_HOUR[daypart]
+        buckets: dict[tuple[int, str], list[Decimal]] = {}
+        for snapshot in snapshots:
+            key = (snapshot.measurement_time.weekday(), _daypart_for_hour(snapshot.measurement_time.hour))
+            buckets.setdefault(key, []).append(snapshot.normalized_value)
+
+        real_ranked = sorted(
+            buckets, key=lambda key: sum(buckets[key], Decimal(0)) / len(buckets[key]), reverse=True
+        )
+        fallback_remaining = [key for key in _FALLBACK_WEEKLY_ORDER if key not in buckets]
+        return [(weekday, _DAYPART_ANCHOR_HOUR[daypart]) for weekday, daypart in real_ranked + fallback_remaining]
+
+    async def suggest_weekly_schedule(
+        self, *, workspace_id: uuid.UUID, count: int, items_per_week: int, metric_name: str = "engagement_rate",
+    ) -> list[datetime]:
+        """The next `count` future publish times, `items_per_week` of them
+        per calendar week, each week's slots taken from the top of
+        rank_weekly_slots() in order — the single best slot goes to the
+        first item scheduled in a given week, and once that week's quota
+        is filled the next item rolls into the following week at the
+        top slot again, instead of dumping an arbitrary number of items
+        into the next few days regardless of how many there are."""
+        if count <= 0:
+            return []
+        items_per_week = max(items_per_week, 1)
+        ranked = await self.rank_weekly_slots(workspace_id=workspace_id, metric_name=metric_name)
         now = datetime.now(UTC)
-        first_slot = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if first_slot <= now:
-            first_slot += timedelta(days=1)
-        return [first_slot + timedelta(days=i) for i in range(count)]
+        schedule: list[datetime] = []
+        for i in range(count):
+            week_offset = i // items_per_week
+            weekday, hour = ranked[(i % items_per_week) % len(ranked)]
+            schedule.append(_next_occurrence(now, weekday=weekday, hour=hour, weeks_out=week_offset))
+        return schedule
 
     async def generate_campaign_comparison(
         self,

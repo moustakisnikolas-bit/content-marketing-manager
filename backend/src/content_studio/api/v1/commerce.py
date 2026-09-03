@@ -370,6 +370,27 @@ async def bulk_generate_product_campaign(
             await marketing_repo.update_plan_item_status(plan_item, "failed")
     await session.commit()
 
+    # Phase D (sequential, DB only): a product's image shared across more
+    # than one target platform only got dispatched once (see
+    # build_bulk_plan_items()'s shared_image_plan_items docstring) — copy
+    # the primary item's now-resolved result onto every platform sharing
+    # it, rather than each running its own independent (and necessarily
+    # different) image generation. primary_item is the exact same object
+    # Phase C just mutated in place (same session, same identity map), so
+    # its content_item_id/generation_job_id/status already reflect that
+    # outcome here, success or failure.
+    for new_item, primary_item in result.shared_image_plan_items:
+        if primary_item.content_item_id is not None and primary_item.generation_job_id is not None:
+            await marketing_repo.link_plan_item_generation(
+                new_item, content_item_id=primary_item.content_item_id,
+                generation_job_id=primary_item.generation_job_id,
+            )
+            await marketing_repo.update_plan_item_status(new_item, primary_item.status)
+        else:
+            await marketing_repo.update_plan_item_status(new_item, "failed")
+    if result.shared_image_plan_items:
+        await session.commit()
+
     return BulkProductCampaignResponse(
         campaign_id=result.campaign_id, started_count=started_count, failed_product_ids=result.failed_product_ids
     )

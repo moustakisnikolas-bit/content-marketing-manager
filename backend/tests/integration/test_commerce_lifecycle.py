@@ -6,11 +6,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from content_studio.api.deps import WorkspaceContext
+from content_studio.api.v1.commerce import bulk_generate_product_campaign
 from content_studio.api.v1.content import edit_revision_text, review_generation_job
 from content_studio.modules.billing.repository import BillingRepository
 from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.commerce.exceptions import ConsentRequired
 from content_studio.modules.commerce.repository import CommerceRepository
+from content_studio.modules.commerce.schemas import BulkProductCampaignRequest
 from content_studio.modules.commerce.service import CommerceService, _strip_product_size
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
@@ -476,12 +478,13 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     )
 
     assert result.failed_product_ids == []
-    # Only the text items are actually dispatched here — image generation
-    # is deferred until each product's paired text item is approved (see
-    # prepare_paired_image_generation), so image items never reach
-    # prepared_items even though their (preview-only) plan item rows exist.
-    assert len(result.prepared_items) == 2  # 2 products x text only
-    assert {p.plan_item.content_type for p in result.prepared_items} == {"text"}
+    # Both text and image are prepared (ContentItem created) right away
+    # now — dispatched in parallel, not deferred until the text is
+    # approved — so both reach prepared_items for the caller
+    # (bulk_generate_product_campaign) to dispatch concurrently.
+    assert len(result.prepared_items) == 4  # 2 products x (text + image)
+    assert {p.plan_item.content_type for p in result.prepared_items} == {"text", "image"}
+    assert result.shared_image_plan_items == []  # single platform — nothing to share
 
     marketing_repo = MarketingRepository(db_session)
     items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
@@ -493,8 +496,11 @@ async def test_bulk_plan_items_creates_new_campaign_with_text_and_image_items(db
     assert "Candle A" in text_item.brief_text
     assert "20% off this week" in text_item.brief_text
 
-    # Image plan items are bare "pending" rows — no ContentItem/GenerationJob
-    # yet, just a preview brief_text for Quick Start's review step.
+    # Image plan item *rows* are still "pending" with no content_item_id/
+    # generation_job_id here — build_bulk_plan_items() only prepares the
+    # ContentItem, it's bulk_generate_product_campaign()'s Phase A-C
+    # (not exercised by this service-level test) that actually creates
+    # the job and links it onto the row.
     with_reference = next(i for i in items if i.product_id == products[0].id and i.content_type == "image")
     assert with_reference.status == "pending"
     assert with_reference.content_item_id is None
@@ -522,10 +528,16 @@ async def test_bulk_plan_items_creates_a_pair_per_target_platform(db_session: As
     )
 
     assert result.failed_product_ids == []
-    # One dispatched text item per platform (image items stay preview-only
-    # pending rows, same as the single-platform case).
-    assert len(result.prepared_items) == 2
-    assert {p.plan_item.target_platform for p in result.prepared_items} == {"facebook", "instagram"}
+    # One dispatched text item per platform, plus one dispatched image —
+    # only the first platform's image is prepared for real; the second
+    # platform's image row is recorded in shared_image_plan_items instead
+    # of getting its own (necessarily-different) independent generation.
+    assert len(result.prepared_items) == 3  # 2 platforms x text + 1 shared image
+    assert {p.plan_item.content_type for p in result.prepared_items} == {"text", "image"}
+    assert len(result.shared_image_plan_items) == 1
+    shared_new_item, shared_primary_item = result.shared_image_plan_items[0]
+    assert shared_new_item.target_platform == "instagram"
+    assert shared_primary_item.target_platform == "facebook"
 
     marketing_repo = MarketingRepository(db_session)
     items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
@@ -539,6 +551,49 @@ async def test_bulk_plan_items_creates_a_pair_per_target_platform(db_session: As
         assert set(platform_items) == {"text", "image"}
         assert platform_items["text"].product_id == candle_a.id
         assert platform_items["image"].product_id == candle_a.id
+
+
+async def test_bulk_generate_product_campaign_dispatches_shared_image_once_for_two_platforms(
+    db_session: AsyncSession,
+) -> None:
+    """The real HTTP-level flow: build_bulk_plan_items() only prepares
+    ContentItems; bulk_generate_product_campaign() is what actually
+    creates jobs and starts workflows — this is where a shared image's
+    second-platform plan item actually gets linked onto the same job the
+    first platform's got, end to end, not a second independent dispatch."""
+    ctx = await _seed_workspace(db_session)
+    _service, products = await _seed_two_products(db_session, ctx)
+    candle_a = products[0]
+
+    context = _context(ctx)
+    user = await db_session.get(User, ctx["user_id"])
+    temporal = _FakeTemporalClient()
+
+    response = await bulk_generate_product_campaign(
+        body=BulkProductCampaignRequest(
+            product_ids=[candle_a.id], description="20% off this week", goal_slug=ctx["goal_slug"],
+            target_platforms=["facebook", "instagram"], campaign_id=None, generate_images=True,
+        ),
+        current_user=user, context=context, session=db_session, secrets=FakeSecrets(), temporal=temporal,
+    )
+
+    assert response.started_count == 3  # 2 text (one per platform) + 1 real image dispatch
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(response.campaign_id)
+    facebook_image = next(i for i in items if i.target_platform == "facebook" and i.content_type == "image")
+    instagram_image = next(i for i in items if i.target_platform == "instagram" and i.content_type == "image")
+
+    assert facebook_image.status == "generating"
+    assert instagram_image.status == "generating"
+    assert facebook_image.content_item_id is not None
+    assert facebook_image.content_item_id == instagram_image.content_item_id
+    assert facebook_image.generation_job_id == instagram_image.generation_job_id
+
+    # Only one image workflow was actually started, not two.
+    image_workflow_ids = {s["id"] for s in temporal.started if s["id"] == f"generation-{facebook_image.generation_job_id}"}
+    assert len(image_workflow_ids) == 1
+    assert len(temporal.started) == 3  # 2 text workflows + 1 image workflow, never 4
 
 
 async def test_approving_text_dispatches_only_the_same_platform_image(db_session: AsyncSession) -> None:
