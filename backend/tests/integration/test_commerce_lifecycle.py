@@ -13,7 +13,11 @@ from content_studio.modules.billing.service import LedgerService
 from content_studio.modules.commerce.exceptions import ConsentRequired
 from content_studio.modules.commerce.repository import CommerceRepository
 from content_studio.modules.commerce.schemas import BulkProductCampaignRequest
-from content_studio.modules.commerce.service import CommerceService, _strip_product_size
+from content_studio.modules.commerce.service import (
+    CommerceService,
+    _strip_collection_label,
+    _strip_product_size,
+)
 from content_studio.modules.commerce.webhook_signature import compute_signature
 from content_studio.modules.creation.repository import CreationRepository
 from content_studio.modules.creation.schemas import EditRevisionTextRequest, ReviewRequest
@@ -1278,6 +1282,23 @@ async def test_strip_product_size_removes_weight_suffix() -> None:
     assert _strip_product_size("WOODLAND | Wax Melts Κύβοι") == "WOODLAND | Wax Melts Κύβοι"
 
 
+async def test_strip_collection_label_removes_quoted_phrase() -> None:
+    # Straight quotes, real production title.
+    assert _strip_collection_label('Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας 200γρ.') == (
+        "Mistral Χειροποίητο Κερί Σόγιας 200γρ"
+    )
+    # Curly quotes, also seen live.
+    assert _strip_collection_label("Musk “Minimal Collection” Χειροποίητο Κερί Σόγιας") == (
+        "Musk Χειροποίητο Κερί Σόγιας"
+    )
+    # No quoted phrase — left unchanged.
+    assert _strip_collection_label("WOODLAND | Wax Melts Κύβοι") == "WOODLAND | Wax Melts Κύβοι"
+    # Composes with weight-stripping regardless of order.
+    assert _strip_collection_label(_strip_product_size('Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας 200γρ.')) == (
+        "Mistral Χειροποίητο Κερί Σόγιας"
+    )
+
+
 async def test_bulk_plan_items_briefs_strip_product_weight_suffix(db_session: AsyncSession) -> None:
     from content_studio.ports.store_connector import ProductData, ProductPage
 
@@ -1325,6 +1346,66 @@ async def test_bulk_plan_items_briefs_strip_product_weight_suffix(db_session: As
 
     assert "200γρ" not in text_item.brief_text
     assert "200γρ" not in image_item.brief_text
+    assert "Mistral" in text_item.brief_text
+
+
+async def test_bulk_plan_items_image_brief_excludes_collection_label_but_text_keeps_it(
+    db_session: AsyncSession,
+) -> None:
+    """Regression test: "Artwood Collection" (and similar quoted labels)
+    are a merchandising grouping shared across unrelated scents, not part
+    of what makes any one product distinctive — left in, the image prompt
+    asked the model to evoke a scene for the collection name itself
+    instead of the actual scent. Only the image brief is affected; the
+    caption can still mention the collection as a selling point."""
+    from content_studio.ports.store_connector import ProductData, ProductPage
+
+    ctx = await _seed_workspace(db_session)
+    secrets = FakeSecrets()
+    pages = [
+        ProductPage(
+            products=[
+                ProductData(
+                    external_product_id="p1",
+                    title='Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας 200γρ.', description="d1",
+                    price="10.00", currency="USD", status="active", raw_payload={},
+                    image_urls=["https://example.com/mistral.jpg"],
+                ),
+            ],
+            next_cursor=None,
+        ),
+    ]
+    adapter = FakeStoreConnector(pages=pages)
+    service = _service(db_session, adapter=adapter, secrets=secrets)
+    connection = await service.connect_store(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        platform="woocommerce", code="fake-code",
+    )
+    await service.sync_products(connection.id)
+    creation_repo = CreationRepository(db_session)
+    await creation_repo.create_recipe(
+        name=f"image-recipe-{uuid.uuid4().hex[:8]}", content_type="image", provider="replicate", model="test-model",
+        estimated_cost=Decimal("2.0"),
+    )
+    await db_session.commit()
+
+    repo = CommerceRepository(db_session)
+    product = (await repo.list_products_for_connection(connection.id))[0]
+
+    result = await service.build_bulk_plan_items(
+        organization_id=ctx["organization_id"], workspace_id=ctx["workspace_id"], user_id=ctx["user_id"],
+        product_ids=[product.id], description="new arrivals", goal_slug=ctx["goal_slug"],
+        target_platforms=[], campaign_id=None, generate_images=True,
+    )
+
+    marketing_repo = MarketingRepository(db_session)
+    items = await marketing_repo.list_plan_items_for_campaign(result.campaign_id)
+    text_item = next(i for i in items if i.content_type == "text")
+    image_item = next(i for i in items if i.content_type == "image")
+
+    assert "Artwood Collection" not in image_item.brief_text
+    assert "Mistral" in image_item.brief_text
+    # Text brief is unaffected — free to mention the collection.
     assert "Mistral" in text_item.brief_text
 
 

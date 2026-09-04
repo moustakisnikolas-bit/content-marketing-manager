@@ -541,7 +541,7 @@ class CommerceService:
                 if generate_images:
                     sequence_number += 1
                     image_brief = _build_image_edit_prompt(
-                        product_title=content_title, campaign_description=description,
+                        product_title=_strip_collection_label(content_title), campaign_description=description,
                         has_reference_image=reference_image_url is not None,
                     )
                     image_item = await marketing_repo.create_plan_item(
@@ -673,6 +673,26 @@ def _strip_product_size(title: str) -> str:
     return _PRODUCT_SIZE_PATTERN.sub("", title).strip().rstrip(".,-").strip()
 
 
+# Some product titles carry a quoted collection label (e.g. "Artwood
+# Collection", "Minimal Collection") shared across many otherwise-unrelated
+# scents — it's a merchandising grouping, not part of what makes any one
+# product's scent distinctive. Left in, it fed straight into the image
+# prompt's "evoke a scene for '{product_title}'" instruction, so the model
+# was asked to evoke "Artwood Collection" itself rather than the actual
+# scent (confirmed live: this reads identically across every product that
+# happens to share a collection, which is exactly the tell that it isn't
+# scent-specific). Matches any of the quote styles this catalog actually
+# uses (straight or curly, single or double) — only ever applied to the
+# title text fed into an *image* prompt, never the text/caption brief,
+# where naming the collection as a selling point is fine.
+_QUOTED_PHRASE_PATTERN = re.compile(r'"[^"]*"|“[^”]*”|\'[^\']*\'|‘[^’]*’')
+
+
+def _strip_collection_label(title: str) -> str:
+    cleaned = _QUOTED_PHRASE_PATTERN.sub("", title)
+    return re.sub(r"\s{2,}", " ", cleaned).strip().rstrip(".,-").strip()
+
+
 def _build_text_brief(
     *,
     product_title: str,
@@ -731,7 +751,9 @@ def build_story_brief(product: Product, hook_text: str) -> str:
     """Entry point for publish_approved()'s companion-story creation (see
     api/v1/marketing.py) — keeps the size-suffix-stripping detail local to
     this module rather than duplicating it at the call site."""
-    return _build_story_image_edit_prompt(product_title=_strip_product_size(product.title), hook_text=hook_text)
+    return _build_story_image_edit_prompt(
+        product_title=_strip_collection_label(_strip_product_size(product.title)), hook_text=hook_text
+    )
 
 
 def _build_story_image_edit_prompt(*, product_title: str, hook_text: str) -> str:
@@ -798,8 +820,8 @@ async def prepare_paired_image_generation(
 
     reference_image_url = min(product.assets, key=lambda a: a.position).url if product.assets else None
     image_brief = _build_image_edit_prompt(
-        product_title=_strip_product_size(product.title), campaign_description=campaign_description,
-        has_reference_image=reference_image_url is not None,
+        product_title=_strip_collection_label(_strip_product_size(product.title)),
+        campaign_description=campaign_description, has_reference_image=reference_image_url is not None,
     )
 
     try:

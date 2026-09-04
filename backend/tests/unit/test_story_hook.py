@@ -48,3 +48,14 @@ async def test_build_story_brief_handles_missing_permalink() -> None:
 
     assert "Lavender Fields" in brief
     assert "Relax into lavender." in brief
+
+
+async def test_build_story_brief_excludes_the_quoted_collection_label() -> None:
+    product = SimpleNamespace(
+        title='Mistral "Artwood Collection" Χειροποίητο Κερί Σόγιας 200γρ.', raw_payload={},
+    )
+
+    brief = build_story_brief(product, "Mistral is back!")
+
+    assert "Artwood Collection" not in brief
+    assert "Mistral" in brief
