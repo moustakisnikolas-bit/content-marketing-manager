@@ -275,10 +275,20 @@ class MetaGraphAdapter:
     async def delete_post(self, *, access_token: str, external_post_id: str) -> None:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             response = await client.delete(f"{_GRAPH_API_BASE}/{external_post_id}", params={"access_token": access_token})
-        # A 404 here means the post is already gone on Meta's side (deleted
-        # manually, or Meta itself removed it) — treat that as success
-        # rather than raising, since the end state ("not on the platform
-        # anymore") is exactly what the caller wants either way.
+        # A 404 means the post is already gone on Meta's side — treat as
+        # success, the end state is exactly what the caller wants either
+        # way. Meta's Page-post delete endpoint returns 400 for the same
+        # "already gone" case instead of 404, though: confirmed live
+        # (ceri.gr) that a post 400ing here with code=100/error_subcode=33
+        # genuinely no longer appeared in the Page's own /posts listing —
+        # this generic-sounding "does not exist, missing permissions, or
+        # unsupported" message is Meta's real wording for "already
+        # deleted," not just for permission problems (the token itself
+        # was independently confirmed valid with the right scopes).
+        if response.status_code == 400:
+            body = response.json().get("error", {})
+            if body.get("code") == 100 and body.get("error_subcode") == 33:
+                return
         if response.status_code not in (200, 404):
             response.raise_for_status()
 
